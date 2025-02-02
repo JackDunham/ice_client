@@ -1,0 +1,244 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/url"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/pion/ice/v2"
+	"github.com/pion/stun"
+
+	// Embed credentials.json
+	_ "embed"
+)
+
+//go:embed credentials.json
+var credentialsData []byte
+
+// IceServers holds the TURN/STUN server details.
+type IceServers struct {
+	Urls       []string `json:"urls"`
+	Username   string   `json:"username"`
+	Credential string   `json:"credential"`
+}
+
+// TurnCredentials wraps the iceServers object.
+type TurnCredentials struct {
+	IceServers IceServers `json:"iceServers"`
+}
+
+func main() {
+	// Parse the embedded credentials.
+	var creds TurnCredentials
+	if err := json.Unmarshal(credentialsData, &creds); err != nil {
+		log.Fatalf("Failed to parse credentials.json: %v", err)
+	}
+	fmt.Printf("Using ICE servers with username: %s\n", creds.IceServers.Username)
+
+	// Select a TURN URL with transport=udp from the provided URLs.
+	var selectedTURN string
+	for _, u := range creds.IceServers.Urls {
+		if strings.HasPrefix(u, "turn:") && strings.Contains(u, "transport=udp") {
+			selectedTURN = u
+			break
+		}
+	}
+	if selectedTURN == "" {
+		log.Fatalf("No suitable TURN URL with transport=udp found in credentials.json")
+	}
+	fmt.Printf("Selected TURN URL (template): %s\n", selectedTURN)
+
+	// Extract the host and port from the selected TURN URL.
+	// The template is expected to be in the form "turn:turn.cloudflare.com:3478?transport=udp"
+	trimmed := strings.TrimPrefix(selectedTURN, "turn:")
+	parts := strings.Split(trimmed, "?")
+	if len(parts) == 0 {
+		log.Fatalf("Unexpected TURN URL format: %s", selectedTURN)
+	}
+	hostPort := parts[0]
+	hostParts := strings.Split(hostPort, ":")
+	if len(hostParts) != 2 {
+		log.Fatalf("Unexpected host:port format in TURN URL: %s", hostPort)
+	}
+	turnHost := hostParts[0]
+	turnPort, err := strconv.Atoi(hostParts[1])
+	if err != nil {
+		log.Fatalf("Invalid TURN port: %v", err)
+	}
+
+	// Build a new TURN URL using the net/url package.
+	// We use the standard userinfo field to embed credentials.
+	u := &url.URL{
+		Scheme: "turn",
+		User:   url.UserPassword(creds.IceServers.Username, creds.IceServers.Credential),
+		Host:   fmt.Sprintf("%s:%d", turnHost, turnPort),
+		// Set the query to specify transport.
+		RawQuery: "transport=udp",
+	}
+	// The URL produced by u.String() will be like:
+	// "turn://<username>:<password>@turn.cloudflare.com:3478?transport=udp"
+	// Replace "turn://" with "turn:" so that it matches the expected format.
+	embeddedTURN := strings.Replace(u.String(), "turn://", "turn:", 1)
+	fmt.Printf("Embedded TURN URL: %s\n", embeddedTURN)
+
+	// Parse the TURN URL using Pion's stun.ParseURI.
+	turnURL, err := stun.ParseURI(embeddedTURN)
+	if err != nil {
+		log.Fatalf("Failed to parse TURN URL: %v", err)
+	}
+
+	// For this test, we manually specify ICE credentials for each agent.
+	// In production, these would be generated randomly and exchanged via signaling.
+	localUfragA := "agentA-ufrag"
+	localPwdA := "agentA-pwd"
+	localUfragB := "agentB-ufrag"
+	localPwdB := "agentB-pwd"
+
+	// Create channels for candidate exchange.
+	aToB := make(chan ice.Candidate, 15)
+	bToA := make(chan ice.Candidate, 15)
+
+	// WaitGroup for candidate exchange goroutines.
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// Create ICE Agent A.
+	agentA, err := ice.NewAgent(&ice.AgentConfig{
+		NetworkTypes: []ice.NetworkType{ice.NetworkTypeUDP4},
+		LocalUfrag:   localUfragA,
+		LocalPwd:     localPwdA,
+		Urls:         []*stun.URI{turnURL},
+	})
+	if err != nil {
+		log.Fatalf("Failed to create agentA: %v", err)
+	}
+	defer agentA.Close()
+
+	// Create ICE Agent B.
+	agentB, err := ice.NewAgent(&ice.AgentConfig{
+		NetworkTypes: []ice.NetworkType{ice.NetworkTypeUDP4},
+		LocalUfrag:   localUfragB,
+		LocalPwd:     localPwdB,
+		Urls:         []*stun.URI{turnURL},
+	})
+	if err != nil {
+		log.Fatalf("Failed to create agentB: %v", err)
+	}
+	defer agentB.Close()
+
+	// Set candidate callbacks.
+	agentA.OnCandidate(func(c ice.Candidate) {
+		if c != nil {
+			aToB <- c
+		}
+	})
+	agentB.OnCandidate(func(c ice.Candidate) {
+		if c != nil {
+			bToA <- c
+		}
+	})
+
+	// Start candidate gathering concurrently.
+	go func() {
+		if err := agentA.GatherCandidates(); err != nil {
+			log.Fatalf("agentA GatherCandidates error: %v", err)
+		}
+		close(aToB)
+	}()
+	go func() {
+		if err := agentB.GatherCandidates(); err != nil {
+			log.Fatalf("agentB GatherCandidates error: %v", err)
+		}
+		close(bToA)
+	}()
+
+	// Exchange candidates: AgentA sends to AgentB.
+	go func() {
+		for candidate := range aToB {
+			if err := agentB.AddRemoteCandidate(candidate); err != nil {
+				log.Printf("agentB AddRemoteCandidate error: %v", err)
+			}
+		}
+	}()
+	// Exchange candidates: AgentB sends to AgentA.
+	go func() {
+		for candidate := range bToA {
+			if err := agentA.AddRemoteCandidate(candidate); err != nil {
+				log.Printf("agentA AddRemoteCandidate error: %v", err)
+			}
+		}
+	}()
+
+	// Wait briefly for candidate gathering.
+	time.Sleep(2 * time.Second)
+
+	// Dial connectivity using remote ICE credentials.
+	// AgentA dials AgentB using AgentB's ICE credentials.
+	var connA, connB *ice.Conn
+	errCh := make(chan error, 2)
+	go func() {
+		c, err := agentA.Dial(context.Background(), localUfragB, localPwdB)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		connA = c
+		errCh <- nil
+	}()
+	// AgentB dials AgentA using AgentA's ICE credentials.
+	go func() {
+		c, err := agentB.Dial(context.Background(), localUfragA, localPwdA)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		connB = c
+		errCh <- nil
+	}()
+	for i := 0; i < 2; i++ {
+		if err := <-errCh; err != nil {
+			log.Fatalf("Dial error: %v", err)
+		}
+	}
+
+	fmt.Println("ICE connectivity established via TURN!")
+
+	// AgentA sends messages to AgentB.
+	go func() {
+		for i := 0; i < 10; i++ {
+			msg := fmt.Sprintf("Hello %d from AgentA", i)
+			_, err := (*connA).Write([]byte(msg))
+			if err != nil {
+				log.Printf("AgentA write error: %v", err)
+			} else {
+				fmt.Printf("AgentA sent: %s\n", msg)
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+	}()
+
+	// AgentB reads messages.
+	go func() {
+		buf := make([]byte, 1500)
+		for {
+			n, err := (*connB).Read(buf)
+			if err != nil {
+				log.Printf("AgentB read error: %v", err)
+				return
+			}
+			fmt.Printf("AgentB received: %s\n", string(buf[:n]))
+		}
+	}()
+
+	// Let the exchange run for a while.
+	time.Sleep(10 * time.Second)
+	close(errCh)
+	wg.Done()
+	wg.Done()
+}

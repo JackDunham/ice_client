@@ -1,0 +1,138 @@
+package main
+
+import (
+	"crypto/md5"
+	"encoding/hex"
+	"fmt"
+	"log"
+	"net"
+	"strings"
+	"sync"
+)
+
+const (
+	multicastAddress = "224.76.78.75:20808"
+	linkHeader       = "_asdp_v"
+	maxDatagramSize  = 8192
+)
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// ListenOnInterface binds a multicast listener on the given interface.
+func ListenOnInterface(iface *net.Interface, addr *net.UDPAddr, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	// Use net.ListenMulticastUDP to bind directly on the interface.
+	conn, err := net.ListenMulticastUDP("udp4", iface, addr)
+	if err != nil {
+		log.Printf("Interface %s: error binding multicast UDP socket: %v", iface.Name, err)
+		return
+	}
+	defer conn.Close()
+
+	if err := conn.SetReadBuffer(maxDatagramSize); err != nil {
+		log.Printf("Interface %s: failed to set read buffer: %v", iface.Name, err)
+	}
+
+	log.Printf("Interface %s: Listening on %s", iface.Name, multicastAddress)
+
+	buf := make([]byte, maxDatagramSize)
+	for {
+		n, src, err := conn.ReadFromUDP(buf)
+		if err != nil {
+			log.Printf("Interface %s: read error: %v", iface.Name, err)
+			continue
+		}
+		data := buf[:n]
+
+		// Log a small portion of the packet (for debugging).
+		log.Printf("Interface %s: Received packet from %v: % x", iface.Name, src, data[:min(n, 32)])
+
+		// Check that the packet begins with the expected Link header.
+		if len(data) < len(linkHeader) || string(data[:len(linkHeader)]) != linkHeader {
+			continue
+		}
+
+		// Ensure the packet is long enough to contain our fixed offsets.
+		if n < 64 {
+			log.Printf("Interface %s: packet too short from %v", iface.Name, src)
+			continue
+		}
+
+		// Check that bytes 52-56 equal "sess".
+		sessHeader := string(data[52:56])
+		if sessHeader != "sess" {
+			log.Printf("Interface %s: missing session header from %v", iface.Name, src)
+			continue
+		}
+
+		// Extract session ID (bytes 56-64) and sender ID (last 4 bytes).
+		sessID := hex.EncodeToString(data[56:64])
+		senderID := fmt.Sprintf("%x", data[n-4:n])
+
+		// Compute an MD5 hash for debugging.
+		hash := md5.Sum(data)
+		encodedHash := hex.EncodeToString(hash[:])
+
+		fmt.Printf("Interface %s: Received Link packet from %v:\n", iface.Name, src)
+		fmt.Printf("  Packet size: %d bytes\n", n)
+		fmt.Printf("  MD5 hash: %s\n", encodedHash)
+		fmt.Printf("  Session header: %s\n", sessHeader)
+		fmt.Printf("  Session ID: %s\n", sessID)
+		fmt.Printf("  Sender ID: %s\n", senderID)
+	}
+}
+
+func main() {
+	// Resolve the multicast UDP address.
+	addr, err := net.ResolveUDPAddr("udp4", multicastAddress)
+	if err != nil {
+		log.Fatalf("Error resolving multicast address: %v", err)
+	}
+
+	// Enumerate active interfaces.
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		log.Fatalf("Error listing interfaces: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	listening := false
+
+	// Filter for interfaces that are UP, support MULTICAST, and have an IPv4 address.
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagMulticast == 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		hasIPv4 := false
+		for _, a := range addrs {
+			if strings.Contains(a.String(), ".") {
+				hasIPv4 = true
+				break
+			}
+		}
+		if !hasIPv4 {
+			continue
+		}
+
+		wg.Add(1)
+		go ListenOnInterface(&iface, addr, &wg)
+		listening = true
+	}
+
+	if !listening {
+		log.Println("No suitable multicast interfaces found. Exiting.")
+		return
+	}
+
+	wg.Wait()
+}

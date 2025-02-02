@@ -1,0 +1,49 @@
+CloudFlare TURN App ID:
+
+Name: link-over-wan
+Turn Token ID: 0dcb3c9c553467f3ca69f05a6afd39ce
+
+API Token: 2a25a05b3daef821a3e93596f6942ac56eace5d9886ca8a2e36b4264fe83b056
+
+How to create credentials
+You need to generate short-lived credentials for each TURN user. In order to create credentials,
+you should have a back-end service that uses your TURN Token ID and API token to generate credentials.
+It will need to make an API call like this:
+
+curl -X POST \
+	-H "Authorization: Bearer 2a25a05b3daef821a3e93596f6942ac56eace5d9886ca8a2e36b4264fe83b056" \
+	-H "Content-Type: application/json" -d '{"ttl": 86400}' \
+	https://rtc.live.cloudflare.com/v1/turn/keys/0dcb3c9c553467f3ca69f05a6afd39ce/credentials/generate
+
+
+The JSON response below can then be passed on to your front-end application to be used when
+creating the RTCPeerConnection:
+{
+    "iceServers": {
+        "urls": [
+            "stun:stun.cloudflare.com:3478",
+            "turn:turn.cloudflare.com:3478?transport=udp",
+            "turn:turn.cloudflare.com:3478?transport=tcp",
+            "turns:turn.cloudflare.com:5349?transport=tcp"
+        ],
+        "username": "xxxx",
+        "credential": "yyyy",
+    }
+}
+
+
+{
+   "iceServers":{
+      "urls":[
+         "stun:stun.cloudflare.com:3478",
+         "turn:turn.cloudflare.com:3478?transport=udp",
+         "turn:turn.cloudflare.com:3478?transport=tcp",
+         "turns:turn.cloudflare.com:5349?transport=tcp"
+      ],
+      "username":"g0469374f51d9df7420709d04b9ac68cfba4a3b57cb01ff986eb941a668d66f8",
+      "credential":"8714b033ad589976414befd078d5bff99c7d540ac28251d4d447bc972cf31d75"
+   }
+}
+
+Documentation:
+https://developers.cloudflare.com/calls/turn/what-is-turn/
