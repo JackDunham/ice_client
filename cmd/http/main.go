@@ -3,11 +3,6 @@ package main
 import (
 	"fmt"
 	"log"
-	"net"
-	"time"
-
-	"github.com/pion/ice/v2"
-	"github.com/pion/stun"
 
 	"encoding/json"
 	"net/http"
@@ -18,17 +13,7 @@ import (
 	"github.com/google/uuid"
 )
 
-var stunServers = []string{
-	`stun.l.google.com:19302`,
-	`stun1.l.google.com:19302`,
-	`stun2.l.google.com:19302`,
-	`stun3.l.google.com:19302`,
-	`stun4.l.google.com:19302`}
-
 const (
-	TurnServer       = `turn:openrelay.metered.ca:80`
-	TurnUsername     = `openrelayproject`
-	TurnCredential   = `openrelayproject`
 	ServerListenPort = ":8082"
 )
 
@@ -166,101 +151,7 @@ func handleGetSession(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(session.Hosts)
 }
 
-func getExternalIP(stunServer string) (*net.UDPAddr, error) {
-	// Dial UDP connection to the STUN server.
-	conn, err := net.Dial("udp4", stunServer)
-	if err != nil {
-		return nil, fmt.Errorf("failed to dial: %w", err)
-	}
-	defer conn.Close()
-
-	// Set a deadline for the STUN transaction.
-	err = conn.SetDeadline(time.Now().Add(5 * time.Second))
-	if err != nil {
-		return nil, fmt.Errorf("failed to set deadline: %w", err)
-	}
-
-	// Build a STUN Binding Request.
-	message := stun.MustBuild(stun.TransactionID, stun.BindingRequest)
-
-	// Send the STUN request.
-	_, err = conn.Write(message.Raw)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send STUN request: %w", err)
-	}
-
-	// Read the STUN response.
-	var buf [1500]byte
-	n, err := conn.Read(buf[:])
-	if err != nil {
-		return nil, fmt.Errorf("failed to read STUN response: %w", err)
-	}
-
-	// Decode the response.
-	var res stun.Message
-	res.Raw = buf[:n]
-	if err := res.Decode(); err != nil {
-		return nil, fmt.Errorf("failed to decode STUN response: %w", err)
-	}
-
-	// Extract the XOR-MAPPED-ADDRESS attribute.
-	var xorAddr stun.XORMappedAddress
-	if err := xorAddr.GetFrom(&res); err != nil {
-		return nil, fmt.Errorf("failed to get XOR-MAPPED-ADDRESS: %w", err)
-	}
-
-	return &net.UDPAddr{
-		IP:   xorAddr.IP,
-		Port: xorAddr.Port,
-	}, nil
-}
-
 func main() {
-	fmt.Print("hello")
-	extAddr, err := getExternalIP(stunServers[0])
-	if err != nil {
-		log.Fatalf("Error: %v", err)
-	}
-	fmt.Printf("External IP: %s\n", extAddr.String())
-
-	// Configuration for the ICE agent
-	config := &ice.AgentConfig{
-		NetworkTypes: []ice.NetworkType{ice.NetworkTypeUDP4},
-		Urls: []*stun.URI{
-			{
-				Scheme: stun.SchemeTypeSTUN,
-				Host:   "stun.l.google.com:19302",
-			},
-		},
-	}
-
-	// Create a new ICE agent
-	agent, err := ice.NewAgent(config)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// Callback to handle newly discovered candidates
-	agent.OnCandidate(func(candidate ice.Candidate) {
-		if candidate == nil {
-			log.Println("Finished gathering candidates")
-			return
-		}
-
-		// Check if it's a server reflexive candidate
-		if candidate.Type() == ice.CandidateTypeServerReflexive {
-			fmt.Printf("External IP: %s\n", candidate.Address())
-		} else {
-			fmt.Printf("EH? %v\n", candidate)
-		}
-	})
-
-	// Start gathering candidates
-	err = agent.GatherCandidates()
-	if err != nil {
-		log.Fatalf("Failed to gather candidates: %v", err)
-	}
-
 	// Wait for gathering to complete (blocking for simplicity)
 	//select {}
 	// Further setup and event handling for the agent
