@@ -1,25 +1,34 @@
 package main
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log"
-
-	"encoding/json"
 	"net/http"
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 )
 
 const (
 	ServerListenPort = ":8082"
+
+	// BasicAuth credentials (change these as desired)
+	BasicAuthUsername = "admin"
+	BasicAuthPassword = "secret"
+
+	// Session expiration duration.
+	SessionExpiration = 8 * time.Hour
 )
 
-// Session holds the list of hosts for a session.
+// Session holds the list of hosts for a session, plus the creation time.
 type Session struct {
-	Hosts []string `json:"hosts"`
+	Hosts     []string  `json:"hosts"`
+	CreatedAt time.Time `json:"-"`
 }
 
 // sessions maps session IDs to their Session.
@@ -37,9 +46,36 @@ type HostRequest struct {
 	Host string `json:"host"`
 }
 
+// basicAuthMiddleware enforces HTTP Basic Authentication.
+func basicAuthMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		const basicPrefix = "Basic "
+		auth := r.Header.Get("Authorization")
+		if !strings.HasPrefix(auth, basicPrefix) {
+			w.Header().Set("WWW-Authenticate", `Basic realm="Restricted"`)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		// Decode the base64 username:password.
+		payload, err := base64.StdEncoding.DecodeString(auth[len(basicPrefix):])
+		if err != nil {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		pair := strings.SplitN(string(payload), ":", 2)
+		if len(pair) != 2 || pair[0] != BasicAuthUsername || pair[1] != BasicAuthPassword {
+			w.Header().Set("WWW-Authenticate", `Basic realm="Restricted"`)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // handleCreateSession handles POST /session requests.
 // It expects a JSON body like {"host": "1.2.3.4:5678"}.
-// A new session ID is generated, the host is saved, and the session ID is returned.
+// A new session ID is generated, the host is saved, and the response returns
+// a JSON object containing both the session_id and the host mapping.
 func handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	mu.Lock()
 	defer mu.Unlock()
@@ -60,19 +96,24 @@ func handleCreateSession(w http.ResponseWriter, r *http.Request) {
 
 	sessionID := uuid.New().String()
 	session := &Session{
-		Hosts: []string{req.Host},
+		Hosts:     []string{req.Host},
+		CreatedAt: time.Now(),
 	}
 
 	sessions[sessionID] = session
 
-	response := map[string]string{"session_id": sessionID}
+	// Return both session_id and the provided host mapping.
+	response := map[string]string{
+		"session_id": sessionID,
+		"host":       req.Host,
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }
 
 // handleUpdateSession handles PUT /session/<session-id> requests.
 // It expects a JSON body like {"host": "1.2.3.4:5678"}.
-// If the host is not already in the session's list, it is added.
+// If the host is not already in the session's list, it is added, and the updated list is returned.
 func handleUpdateSession(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -151,12 +192,29 @@ func handleGetSession(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(session.Hosts)
 }
 
+// purgeExpiredSessions periodically removes sessions older than SessionExpiration.
+func purgeExpiredSessions() {
+	ticker := time.NewTicker(30 * time.Minute)
+	for {
+		<-ticker.C
+		mu.Lock()
+		now := time.Now()
+		for id, session := range sessions {
+			if now.Sub(session.CreatedAt) > SessionExpiration {
+				delete(sessions, id)
+				log.Printf("Session %s expired and removed", id)
+			}
+		}
+		mu.Unlock()
+	}
+}
+
 func main() {
-	// Wait for gathering to complete (blocking for simplicity)
-	//select {}
-	// Further setup and event handling for the agent
-	// We use a single handler for "/session" and "/session/<session-id>".
-	http.HandleFunc("/session/", func(w http.ResponseWriter, r *http.Request) {
+	// Start background goroutine to purge expired sessions.
+	go purgeExpiredSessions()
+
+	// Wrap the HTTP handlers with Basic Auth middleware.
+	authenticatedHandler := basicAuthMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// When the URL is exactly "/session", assume it's a session creation (POST).
 		if r.Method == http.MethodPost && r.URL.Path == "/session" {
 			handleCreateSession(w, r)
@@ -179,18 +237,12 @@ func main() {
 		}
 
 		http.Error(w, "Not found", http.StatusNotFound)
-	})
+	}))
 
-	// Also register POST /session (without trailing slash).
-	http.HandleFunc("/session", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost {
-			handleCreateSession(w, r)
-			return
-		}
-		http.Error(w, "Not found", http.StatusNotFound)
-	})
+	// Also register POST /session (without trailing slash) with basic auth.
+	http.Handle("/session", basicAuthMiddleware(http.HandlerFunc(handleCreateSession)))
+	http.Handle("/session/", authenticatedHandler)
 
 	fmt.Printf("Server starting on %s\n", ServerListenPort)
 	log.Fatal(http.ListenAndServe(ServerListenPort, nil))
-
 }
