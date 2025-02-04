@@ -72,6 +72,13 @@ func basicAuthMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// healthCheckHandler provides an unauthenticated health-check endpoint at "/".
+func healthCheckHandler(w http.ResponseWriter, r *http.Request) {
+	// Return 200 OK with a simple response.
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprint(w, "OK")
+}
+
 // handleCreateSession handles POST /session requests.
 // It expects a JSON body like {"host": "1.2.3.4:5678"}.
 // A new session ID is generated, the host is saved, and the response returns
@@ -213,7 +220,10 @@ func main() {
 	// Start background goroutine to purge expired sessions.
 	go purgeExpiredSessions()
 
-	// Wrap the HTTP handlers with Basic Auth middleware.
+	// Register an unauthenticated health-check at the root "/".
+	http.HandleFunc("/", healthCheckHandler)
+
+	// Wrap the HTTP handlers with Basic Auth middleware for session endpoints.
 	authenticatedHandler := basicAuthMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// When the URL is exactly "/session", assume it's a session creation (POST).
 		if r.Method == http.MethodPost && r.URL.Path == "/session" {
@@ -239,7 +249,7 @@ func main() {
 		http.Error(w, "Not found", http.StatusNotFound)
 	}))
 
-	// Also register POST /session (without trailing slash) with basic auth.
+	// Register endpoints for session creation and management with Basic Auth.
 	http.Handle("/session", basicAuthMiddleware(http.HandlerFunc(handleCreateSession)))
 	http.Handle("/session/", authenticatedHandler)
 

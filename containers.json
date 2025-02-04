@@ -1,0 +1,11 @@
+{
+  "session-server": {
+    "image": ":session-server.session-server-label.1",
+    "command": [],
+    "environment": {},
+    "ports": {
+      "8082": "HTTP"
+    }
+  }
+}
+

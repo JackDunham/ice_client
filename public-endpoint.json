@@ -1,0 +1,13 @@
+{
+  "containerName": "session-server",
+  "containerPort": 8082,
+  "healthCheck": {
+    "healthyThreshold": 2,
+    "unhealthyThreshold": 2,
+    "timeoutSeconds": 5,
+    "intervalSeconds": 10,
+    "path": "/",
+    "successCodes": "200"
+  }
+}
+
