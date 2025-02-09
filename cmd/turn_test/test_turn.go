@@ -234,14 +234,14 @@ func joinOrCreateSession(sessionID, relayAddress string) error {
 		}{}
 		unmarshalErr := json.Unmarshal(bodyBytes, &newSessionInfo)
 		if unmarshalErr != nil {
-			return fmt.Errorf("Failed unmarshaling session POST response %s: %w", string(bodyBytes), unmarshalErr)
+			return fmt.Errorf("failed unmarshaling session POST response %s: %w", string(bodyBytes), unmarshalErr)
 		}
 		sessionID = newSessionInfo.SessionID
 		fmt.Print(newSessionInfo)
 	} else {
 		unmarshalErr := json.Unmarshal(bodyBytes, &sessionHosts)
 		if unmarshalErr != nil {
-			return fmt.Errorf("Failed unmarshaling session PUT response %s: %s", string(bodyBytes), unmarshalErr)
+			return fmt.Errorf("failed unmarshaling session PUT response %s: %s", string(bodyBytes), unmarshalErr)
 		}
 		fmt.Print(sessionHosts)
 	}
@@ -260,11 +260,11 @@ func joinOrCreateSession(sessionID, relayAddress string) error {
 				fmt.Println("Context cancelled, stopping periodic task")
 				return
 			case t := <-ticker.C:
-				fmt.Print("Updating session info %v\n", t)
+				fmt.Printf("Updating session info %v\n", t)
 				updateSessionInfo()
 			}
 		}
-	}(context.Background(), time.Minute)
+	}(context.Background(), time.Minute) // TODO(jack): FIX magic-number
 
 	return nil
 }
