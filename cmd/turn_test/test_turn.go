@@ -1,22 +1,36 @@
-// SPDX-FileCopyrightText: 2023 The Pion community <https://pion.ly>
-// SPDX-License-Identifier: MIT
-
-// Package main implements a TURN client using UDP
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
+	"net/http"
+	"os"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/pion/logging"
 	"github.com/pion/turn/v4"
 
 	// Embed credentials.json
 	_ "embed"
+)
+
+const (
+	SECONDS_PER_DAY               = 86400
+	API_BEARER_TOKEN              = "2a25a05b3daef821a3e93596f6942ac56eace5d9886ca8a2e36b4264fe83b056"
+	TURN_TOKEN_ID                 = "0dcb3c9c553467f3ca69f05a6afd39ce"
+	CLOUDFLARE_CREDENTIALS_URL    = "https://rtc.live.cloudflare.com/v1/turn/keys/%s/credentials/generate"
+	CONTENT_TYPE_APPLICATION_JSON = "application/json"
+	LIGHTSAIL_CONTAINER_HOST      = "https://link-session-service.nrr4m2c4w38qw.us-west-2.cs.amazonlightsail.com"
+	LIGHTSAIL_CONTAINER_USER      = "admin"
+	LIGHTSAIL_CONTAINER_PASS      = "secret"
+	LIGHTSAIL_BASIC_AUTH_TOKEN    = "YWRtaW46c2VjcmV0"
 )
 
 //go:embed credentials.json
@@ -35,28 +49,81 @@ type TurnCredentials struct {
 	IceServers IceServers `json:"iceServers"`
 }
 
-func main() { //nolint:cyclop
-	// Parse the embedded credentials.
+type TurnCredentialsPostBody struct {
+	TTL int `json:"ttl"`
+}
+
+func getTurnCredentials() (*TurnCredentials, error) {
+	ctx, cancelFunc := context.WithTimeout(context.Background(), time.Second*time.Duration(5))
+	defer cancelFunc()
+
+	turnCredentialsPostBody := TurnCredentialsPostBody{TTL: SECONDS_PER_DAY}
+	postBodyBytes, err := json.Marshal(turnCredentialsPostBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed marsh calling credentials pod body: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf(CLOUDFLARE_CREDENTIALS_URL, TURN_TOKEN_ID), bytes.NewBuffer(postBodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("failed creating credentials request: %w", err)
+	}
+	req.Header.Set("Content-Type", CONTENT_TYPE_APPLICATION_JSON)
+	req.Header.Set("Authorization", "Bearer "+API_BEARER_TOKEN)
+	httpClient := &http.Client{}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed requesting credentials: %w", err)
+	}
+	// Read the response body.
+	body, err := io.ReadAll(resp.Body)
+	defer resp.Body.Close()
+
+	if err != nil {
+		return nil, fmt.Errorf("error reading response: %w", err)
+	} else if len(body) == 0 {
+		return nil, fmt.Errorf("error empty response (status-code=%d): %w", resp.StatusCode, err)
+	}
+
 	var creds TurnCredentials
-	if err := json.Unmarshal(credentialsData, &creds); err != nil {
-		log.Fatalf("Failed to parse credentials.json: %v", err)
+	if err := json.Unmarshal(body, &creds); err != nil {
+		return nil, fmt.Errorf("failed to parse credentials: %w", err)
+	}
+	fmt.Printf("Using ICE servers with username: %s\n", creds.IceServers.Username)
+	return &creds, nil
+}
+
+func getHostPortUserCredRealm(creds *TurnCredentials) (host, port, user, cred, realm string) {
+	hostAndPort := creds.IceServers.Urls[1]
+	host = strings.TrimPrefix(hostAndPort[0:strings.LastIndex(hostAndPort, ":")], "turn:")
+	port = strings.TrimPrefix(strings.Split(hostAndPort[strings.LastIndex(hostAndPort, ":"):], "?")[0], ":")
+	user = creds.IceServers.Username
+	cred = creds.IceServers.Credential
+	realm = ""
+	return
+}
+
+func main() { //nolint:cyclop
+	sessionID := ""
+	createSession := false
+	if len(os.Args) == 2 && os.Args[1] != "" {
+		sessionID = os.Args[1]
+	} else {
+		sessionUUID, uuidErr := uuid.NewRandom()
+		if uuidErr != nil {
+			log.Panicf("Failed to create session ID: %v", uuidErr)
+		}
+		createSession = true
+		sessionID = sessionUUID.String()
+	}
+	fmt.Printf("sessionID=%s (create-session=%v)", sessionID, createSession)
+
+	creds, err := getTurnCredentials()
+	if err != nil {
+		log.Fatalf("Error retrieving credentials: %v", err)
 	}
 	fmt.Printf("Using ICE servers with username: %s\n", creds.IceServers.Username)
 
-	/*
-		host := flag.String("host", "", "TURN Server name.")
-		port := flag.Int("port", 3478, "Listening port.")
-		user := flag.String("user", "", "A pair of username and password (e.g. \"user=pass\")")
-		realm := flag.String("realm", "pion.ly", "Realm (defaults to \"pion.ly\")")
-		ping := flag.Bool("ping", false, "Run ping test")
-		flag.Parse()
-	*/
-	hostAndPort := creds.IceServers.Urls[1]
-	host := strings.TrimPrefix(hostAndPort[0:strings.LastIndex(hostAndPort, ":")], "turn:")
-	port := strings.TrimPrefix(strings.Split(hostAndPort[strings.LastIndex(hostAndPort, ":"):], "?")[0], ":")
-	user := creds.IceServers.Username
-	cred := creds.IceServers.Credential
-	realm := ""
+	host, port, user, cred, realm := getHostPortUserCredRealm(creds)
 	ping := true
 
 	// TURN client won't create a local listening socket by itself.
@@ -166,6 +233,7 @@ func doPingTest(client *turn.Client, relayConn net.PacketConn) error { //nolint:
 	}()
 
 	// Start read-loop on relayConn
+	// TODO(jack): here woud be the place to READ packets from other Link relays
 	go func() {
 		buf := make([]byte, 1600)
 		for {
@@ -196,5 +264,6 @@ func doPingTest(client *turn.Client, relayConn net.PacketConn) error { //nolint:
 		time.Sleep(time.Second)
 	}
 
+	time.Sleep(time.Minute * time.Duration(15))
 	return nil
 }

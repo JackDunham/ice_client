@@ -1,6 +1,6 @@
 {
-  "session-server": {
-    "image": ":session-server.session-server-label.1",
+  "link-session-service": {
+    "image": ":link-session-service.session-server-img-2.2",
     "command": [],
     "environment": {},
     "ports": {

@@ -1,0 +1,55 @@
+{
+    "containerService": {
+        "containerServiceName": "link-session-service",
+        "arn": "arn:aws:lightsail:us-west-2:635307196652:ContainerService/bb32f204-aab7-40e9-9ca2-34f57f0788e4",
+        "createdAt": "2025-02-04T07:07:57-08:00",
+        "location": {
+            "availabilityZone": "all",
+            "regionName": "us-west-2"
+        },
+        "resourceType": "ContainerService",
+        "tags": [],
+        "power": "nano",
+        "powerId": "nano-1",
+        "state": "DEPLOYING",
+        "scale": 1,
+        "nextDeployment": {
+            "version": 1,
+            "state": "ACTIVATING",
+            "containers": {
+                "link-session-service": {
+                    "image": ":link-session-service.session-server-img-2.2",
+                    "command": [],
+                    "environment": {},
+                    "ports": {
+                        "8082": "HTTP"
+                    }
+                }
+            },
+            "publicEndpoint": {
+                "containerName": "link-session-service",
+                "containerPort": 8082,
+                "healthCheck": {
+                    "healthyThreshold": 2,
+                    "unhealthyThreshold": 2,
+                    "timeoutSeconds": 5,
+                    "intervalSeconds": 10,
+                    "path": "/",
+                    "successCodes": "200"
+                }
+            },
+            "createdAt": "2025-02-04T07:14:10-08:00"
+        },
+        "isDisabled": false,
+        "principalArn": "arn:aws:iam::585768139396:role/amazon/lightsail/us-west-2/containers/link-session-service/tk43jfol40r0c4q8uglhgpej68ddqeojt28ujlt8itmccen681hg",
+        "privateDomainName": "link-session-service.service.local",
+        "url": "https://link-session-service.nrr4m2c4w38qw.us-west-2.cs.amazonlightsail.com/",
+        "privateRegistryAccess": {
+            "ecrImagePullerRole": {
+                "isActive": false,
+                "principalArn": ""
+            }
+        }
+    }
+}
+
