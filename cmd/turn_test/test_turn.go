@@ -31,13 +31,23 @@ const (
 	LIGHTSAIL_CONTAINER_USER      = "admin"
 	LIGHTSAIL_CONTAINER_PASS      = "secret"
 	LIGHTSAIL_BASIC_AUTH_TOKEN    = "YWRtaW46c2VjcmV0"
+	DO_PING_TEST                  = false
 )
 
 //go:embed credentials.json
 var credentialsData []byte
 
-var sessionHosts []string
 var hostsDataMutex sync.Mutex
+
+var sessionID string
+
+type LinkSession struct {
+	SessionID string
+	Hosts     []string
+	ThisHost  string
+}
+
+var linkSession = &LinkSession{}
 
 // IceServers holds the TURN/STUN server details.
 
@@ -64,14 +74,21 @@ func updateSessionHosts(hosts []string) {
 	hostsDataMutex.Lock()
 	defer hostsDataMutex.Unlock()
 
-	sessionHosts = hosts
+	tempHosts := []string{}
+	for _, host := range hosts {
+		if host != linkSession.ThisHost {
+			tempHosts = append(tempHosts, host)
+		}
+	}
+
+	linkSession.Hosts = tempHosts
 }
 
 func getSessionHosts() []string {
 	hostsDataMutex.Lock()
 	defer hostsDataMutex.Unlock()
 
-	return sessionHosts
+	return linkSession.Hosts
 }
 
 func getTurnCredentials() (*TurnCredentials, error) {
@@ -123,6 +140,46 @@ func getHostPortUserCredRealm(creds *TurnCredentials) (host, port, user, cred, r
 	return
 }
 
+func updateSessionInfo() error {
+	sessionID = linkSession.SessionID
+	sessionCtx, sessionCancelFunc := context.WithTimeout(context.Background(), time.Minute*time.Duration(5))
+	defer sessionCancelFunc()
+
+	sessionURL := fmt.Sprintf("%s/session/%s", LIGHTSAIL_CONTAINER_HOST, sessionID)
+	sessionReq, reqCreationErr := http.NewRequestWithContext(sessionCtx, http.MethodGet, sessionURL, http.NoBody)
+	if reqCreationErr != nil {
+		return fmt.Errorf("failed to create session request: %w", reqCreationErr)
+	}
+	sessionReq.Header.Set("Authorization", fmt.Sprintf("Basic %s", LIGHTSAIL_BASIC_AUTH_TOKEN))
+
+	sessionClient := http.DefaultClient
+	sessionResp, sessErr := sessionClient.Do(sessionReq)
+	if sessErr != nil {
+		return fmt.Errorf("failed session request: %w", sessErr)
+	}
+	defer sessionResp.Body.Close()
+
+	if sessionResp.StatusCode != http.StatusOK {
+		return fmt.Errorf("bad session response: %d", sessionResp.StatusCode)
+	}
+	bodyBytes, readErr := io.ReadAll(sessionResp.Body)
+	if readErr != nil {
+		return fmt.Errorf("failed reading session body-bytes: %w", readErr)
+	} else if len(bodyBytes) == 0 {
+		return fmt.Errorf("empty session body-bytes")
+	}
+	hostsList := []string{}
+	unmarshalErr := json.Unmarshal(bodyBytes, &hostsList)
+	if unmarshalErr != nil {
+		log.Panicf("Failed unmarshaling session response %s: %v", string(bodyBytes), unmarshalErr)
+	}
+	fmt.Print(hostsList)
+	updateSessionHosts(hostsList)
+	return nil
+}
+
+// join or create an Link session. If successful, this will periodically monitor the session to
+// update the list of hosts
 func joinOrCreateSession(sessionID, relayAddress string) error {
 	sessionEntry := SessionEntry{Host: relayAddress}
 	sessionEntryBytes, jsonErr := json.Marshal(sessionEntry)
@@ -169,6 +226,7 @@ func joinOrCreateSession(sessionID, relayAddress string) error {
 		return fmt.Errorf("empty session body-bytes")
 	}
 
+	sessionHosts := []string{}
 	if sessionID == "" {
 		newSessionInfo := struct {
 			Host      string `json:"host"`
@@ -176,12 +234,38 @@ func joinOrCreateSession(sessionID, relayAddress string) error {
 		}{}
 		unmarshalErr := json.Unmarshal(bodyBytes, &newSessionInfo)
 		if unmarshalErr != nil {
-			log.Panicf("Failed unmarshaling session response %s: %v", string(bodyBytes), unmarshalErr)
+			return fmt.Errorf("Failed unmarshaling session POST response %s: %w", string(bodyBytes), unmarshalErr)
 		}
+		sessionID = newSessionInfo.SessionID
 		fmt.Print(newSessionInfo)
 	} else {
-		fmt.Print("NO OP")
+		unmarshalErr := json.Unmarshal(bodyBytes, &sessionHosts)
+		if unmarshalErr != nil {
+			return fmt.Errorf("Failed unmarshaling session PUT response %s: %s", string(bodyBytes), unmarshalErr)
+		}
+		fmt.Print(sessionHosts)
 	}
+	linkSession.SessionID = sessionID
+	linkSession.ThisHost = relayAddress
+	updateSessionHosts(sessionHosts)
+
+	// start async go-routine to periodically check for new-hosts joining the session
+	go func(ctx context.Context, interval time.Duration) {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop() // Ensure ticker is stopped when done.
+
+		for {
+			select {
+			case <-ctx.Done():
+				fmt.Println("Context cancelled, stopping periodic task")
+				return
+			case t := <-ticker.C:
+				fmt.Print("Updating session info %v\n", t)
+				updateSessionInfo()
+			}
+		}
+	}(context.Background(), time.Minute)
+
 	return nil
 }
 
@@ -202,7 +286,7 @@ func main() { //nolint:cyclop
 	fmt.Printf("Using ICE servers with username: %s\n", creds.IceServers.Username)
 
 	host, port, user, cred, realm := getHostPortUserCredRealm(creds)
-	ping := true
+	ping := DO_PING_TEST
 
 	// TURN client won't create a local listening socket by itself.
 	conn, err := net.ListenPacket("udp4", "0.0.0.0:0")
@@ -267,6 +351,9 @@ func main() { //nolint:cyclop
 			log.Panicf("Failed to ping: %s", err)
 		}
 	}
+
+	// TODO(jack): actually run "forever" but listen for kill/quit
+	time.Sleep(time.Minute * time.Duration(15))
 }
 
 func doPingTest(client *turn.Client, relayConn net.PacketConn) error { //nolint:cyclop
