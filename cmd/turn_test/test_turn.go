@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/pion/logging"
 	"github.com/pion/turn/v4"
 
@@ -51,6 +50,10 @@ type TurnCredentials struct {
 
 type TurnCredentialsPostBody struct {
 	TTL int `json:"ttl"`
+}
+
+type SessionEntry struct {
+	Host string `json:"host"`
 }
 
 func getTurnCredentials() (*TurnCredentials, error) {
@@ -108,12 +111,7 @@ func main() { //nolint:cyclop
 	if len(os.Args) == 2 && os.Args[1] != "" {
 		sessionID = os.Args[1]
 	} else {
-		sessionUUID, uuidErr := uuid.NewRandom()
-		if uuidErr != nil {
-			log.Panicf("Failed to create session ID: %v", uuidErr)
-		}
 		createSession = true
-		sessionID = sessionUUID.String()
 	}
 	fmt.Printf("sessionID=%s (create-session=%v)", sessionID, createSession)
 
@@ -177,6 +175,51 @@ func main() { //nolint:cyclop
 	// The relayConn's local address is actually the transport
 	// address assigned on the TURN server.
 	log.Printf("relayed-address=%s", relayConn.LocalAddr().String())
+
+	// register relay-address
+	if createSession {
+		sessionCtx, sessionCancelFunc := context.WithTimeout(context.Background(), time.Minute*time.Duration(5))
+		defer sessionCancelFunc()
+
+		sessionEntry := SessionEntry{Host: relayConn.LocalAddr().String()}
+		sessionEntryBytes, jsonErr := json.Marshal(sessionEntry)
+		if jsonErr != nil {
+			log.Panicf("Failed to marshal session entry %+v: %s", sessionEntry, jsonErr)
+		}
+		sessionReq, reqCreationErr := http.NewRequestWithContext(sessionCtx, http.MethodPost, LIGHTSAIL_CONTAINER_HOST+"/session", bytes.NewBuffer(sessionEntryBytes))
+		if reqCreationErr != nil {
+			log.Panicf("Failed to create session request: %v", reqCreationErr)
+		}
+		sessionReq.Header.Set("Authorization", fmt.Sprintf("Basic %s", LIGHTSAIL_BASIC_AUTH_TOKEN))
+
+		sessionClient := http.DefaultClient
+		sessionResp, sessErr := sessionClient.Do(sessionReq)
+		if sessErr != nil {
+			log.Panicf("Failed session request: %v", sessErr)
+		}
+		defer sessionResp.Body.Close()
+
+		if sessionResp.StatusCode != http.StatusOK {
+			log.Panicf("Bad session response: %d", sessionResp.StatusCode)
+		}
+		bodyBytes, readErr := io.ReadAll(sessionResp.Body)
+		if readErr != nil {
+			log.Panicf("Failed reading session body-bytes: %v", readErr)
+		} else if len(bodyBytes) == 0 {
+			log.Panicf("Empty session body-bytes")
+		}
+		newSessionInfo := struct {
+			Host      string `json:"host"`
+			SessionID string `json:"session_id"`
+		}{}
+		unmarshalErr := json.Unmarshal(bodyBytes, &newSessionInfo)
+		if unmarshalErr != nil {
+			log.Panicf("Failed unmarshaling session response %s: %v", string(bodyBytes), unmarshalErr)
+		}
+		fmt.Print(newSessionInfo)
+	} else {
+		fmt.Print("NO OP")
+	}
 
 	// If you provided `-ping`, perform a ping test against the
 	// relayConn we have just allocated.
