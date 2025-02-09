@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pion/logging"
@@ -35,6 +36,9 @@ const (
 //go:embed credentials.json
 var credentialsData []byte
 
+var sessionHosts []string
+var hostsDataMutex sync.Mutex
+
 // IceServers holds the TURN/STUN server details.
 
 type IceServers struct {
@@ -54,6 +58,20 @@ type TurnCredentialsPostBody struct {
 
 type SessionEntry struct {
 	Host string `json:"host"`
+}
+
+func updateSessionHosts(hosts []string) {
+	hostsDataMutex.Lock()
+	defer hostsDataMutex.Unlock()
+
+	sessionHosts = hosts
+}
+
+func getSessionHosts() []string {
+	hostsDataMutex.Lock()
+	defer hostsDataMutex.Unlock()
+
+	return sessionHosts
 }
 
 func getTurnCredentials() (*TurnCredentials, error) {
@@ -103,6 +121,68 @@ func getHostPortUserCredRealm(creds *TurnCredentials) (host, port, user, cred, r
 	cred = creds.IceServers.Credential
 	realm = ""
 	return
+}
+
+func joinOrCreateSession(sessionID, relayAddress string) error {
+	sessionEntry := SessionEntry{Host: relayAddress}
+	sessionEntryBytes, jsonErr := json.Marshal(sessionEntry)
+
+	if jsonErr != nil {
+		return fmt.Errorf("failed to marshal session entry %+v: %w", sessionEntry, jsonErr)
+	}
+
+	sessionCtx, sessionCancelFunc := context.WithTimeout(context.Background(), time.Minute*time.Duration(5))
+	defer sessionCancelFunc()
+
+	var httpMethod string
+	var sessionURL string
+	// we are joining an existing session
+	if sessionID != "" {
+		httpMethod = http.MethodPut
+		sessionURL = fmt.Sprintf("%s/session/%s", LIGHTSAIL_CONTAINER_HOST, sessionID)
+	} else {
+		// we are creation a new session
+		sessionURL = fmt.Sprintf("%s/session", LIGHTSAIL_CONTAINER_HOST)
+		httpMethod = http.MethodPost
+	}
+
+	sessionReq, reqCreationErr := http.NewRequestWithContext(sessionCtx, httpMethod, sessionURL, bytes.NewBuffer(sessionEntryBytes))
+	if reqCreationErr != nil {
+		return fmt.Errorf("failed to create session request: %w", reqCreationErr)
+	}
+	sessionReq.Header.Set("Authorization", fmt.Sprintf("Basic %s", LIGHTSAIL_BASIC_AUTH_TOKEN))
+
+	sessionClient := http.DefaultClient
+	sessionResp, sessErr := sessionClient.Do(sessionReq)
+	if sessErr != nil {
+		return fmt.Errorf("failed session request: %w", sessErr)
+	}
+	defer sessionResp.Body.Close()
+
+	if sessionResp.StatusCode != http.StatusOK {
+		return fmt.Errorf("bad session response: %d", sessionResp.StatusCode)
+	}
+	bodyBytes, readErr := io.ReadAll(sessionResp.Body)
+	if readErr != nil {
+		return fmt.Errorf("failed reading session body-bytes: %w", readErr)
+	} else if len(bodyBytes) == 0 {
+		return fmt.Errorf("empty session body-bytes")
+	}
+
+	if sessionID == "" {
+		newSessionInfo := struct {
+			Host      string `json:"host"`
+			SessionID string `json:"session_id"`
+		}{}
+		unmarshalErr := json.Unmarshal(bodyBytes, &newSessionInfo)
+		if unmarshalErr != nil {
+			log.Panicf("Failed unmarshaling session response %s: %v", string(bodyBytes), unmarshalErr)
+		}
+		fmt.Print(newSessionInfo)
+	} else {
+		fmt.Print("NO OP")
+	}
+	return nil
 }
 
 func main() { //nolint:cyclop
@@ -177,49 +257,7 @@ func main() { //nolint:cyclop
 	log.Printf("relayed-address=%s", relayConn.LocalAddr().String())
 
 	// register relay-address
-	if createSession {
-		sessionCtx, sessionCancelFunc := context.WithTimeout(context.Background(), time.Minute*time.Duration(5))
-		defer sessionCancelFunc()
-
-		sessionEntry := SessionEntry{Host: relayConn.LocalAddr().String()}
-		sessionEntryBytes, jsonErr := json.Marshal(sessionEntry)
-		if jsonErr != nil {
-			log.Panicf("Failed to marshal session entry %+v: %s", sessionEntry, jsonErr)
-		}
-		sessionReq, reqCreationErr := http.NewRequestWithContext(sessionCtx, http.MethodPost, LIGHTSAIL_CONTAINER_HOST+"/session", bytes.NewBuffer(sessionEntryBytes))
-		if reqCreationErr != nil {
-			log.Panicf("Failed to create session request: %v", reqCreationErr)
-		}
-		sessionReq.Header.Set("Authorization", fmt.Sprintf("Basic %s", LIGHTSAIL_BASIC_AUTH_TOKEN))
-
-		sessionClient := http.DefaultClient
-		sessionResp, sessErr := sessionClient.Do(sessionReq)
-		if sessErr != nil {
-			log.Panicf("Failed session request: %v", sessErr)
-		}
-		defer sessionResp.Body.Close()
-
-		if sessionResp.StatusCode != http.StatusOK {
-			log.Panicf("Bad session response: %d", sessionResp.StatusCode)
-		}
-		bodyBytes, readErr := io.ReadAll(sessionResp.Body)
-		if readErr != nil {
-			log.Panicf("Failed reading session body-bytes: %v", readErr)
-		} else if len(bodyBytes) == 0 {
-			log.Panicf("Empty session body-bytes")
-		}
-		newSessionInfo := struct {
-			Host      string `json:"host"`
-			SessionID string `json:"session_id"`
-		}{}
-		unmarshalErr := json.Unmarshal(bodyBytes, &newSessionInfo)
-		if unmarshalErr != nil {
-			log.Panicf("Failed unmarshaling session response %s: %v", string(bodyBytes), unmarshalErr)
-		}
-		fmt.Print(newSessionInfo)
-	} else {
-		fmt.Print("NO OP")
-	}
+	joinOrCreateSession(sessionID, relayConn.LocalAddr().String())
 
 	// If you provided `-ping`, perform a ping test against the
 	// relayConn we have just allocated.
