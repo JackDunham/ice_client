@@ -10,8 +10,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/pion/logging"
@@ -32,6 +34,7 @@ const (
 	LIGHTSAIL_CONTAINER_PASS      = "secret"
 	LIGHTSAIL_BASIC_AUTH_TOKEN    = "YWRtaW46c2VjcmV0"
 	DO_PING_TEST                  = false
+	HOST_REFRESH_INTERVAL         = time.Second * 15
 )
 
 //go:embed credentials.json
@@ -174,18 +177,19 @@ func updateSessionInfo() error {
 		log.Panicf("Failed unmarshaling session response %s: %v", string(bodyBytes), unmarshalErr)
 	}
 	fmt.Print(hostsList)
+	fmt.Printf("SESSION HOSTS: %+v", hostsList)
 	updateSessionHosts(hostsList)
 	return nil
 }
 
 // join or create an Link session. If successful, this will periodically monitor the session to
 // update the list of hosts
-func joinOrCreateSession(sessionID, relayAddress string) error {
+func joinOrCreateSession(sessionID, relayAddress string) (string, error) {
 	sessionEntry := SessionEntry{Host: relayAddress}
 	sessionEntryBytes, jsonErr := json.Marshal(sessionEntry)
 
 	if jsonErr != nil {
-		return fmt.Errorf("failed to marshal session entry %+v: %w", sessionEntry, jsonErr)
+		return "", fmt.Errorf("failed to marshal session entry %+v: %w", sessionEntry, jsonErr)
 	}
 
 	sessionCtx, sessionCancelFunc := context.WithTimeout(context.Background(), time.Minute*time.Duration(5))
@@ -205,25 +209,25 @@ func joinOrCreateSession(sessionID, relayAddress string) error {
 
 	sessionReq, reqCreationErr := http.NewRequestWithContext(sessionCtx, httpMethod, sessionURL, bytes.NewBuffer(sessionEntryBytes))
 	if reqCreationErr != nil {
-		return fmt.Errorf("failed to create session request: %w", reqCreationErr)
+		return "", fmt.Errorf("failed to create session request: %w", reqCreationErr)
 	}
 	sessionReq.Header.Set("Authorization", fmt.Sprintf("Basic %s", LIGHTSAIL_BASIC_AUTH_TOKEN))
 
 	sessionClient := http.DefaultClient
 	sessionResp, sessErr := sessionClient.Do(sessionReq)
 	if sessErr != nil {
-		return fmt.Errorf("failed session request: %w", sessErr)
+		return "", fmt.Errorf("failed session request: %w", sessErr)
 	}
 	defer sessionResp.Body.Close()
 
 	if sessionResp.StatusCode != http.StatusOK {
-		return fmt.Errorf("bad session response: %d", sessionResp.StatusCode)
+		return "", fmt.Errorf("bad session response: %d", sessionResp.StatusCode)
 	}
 	bodyBytes, readErr := io.ReadAll(sessionResp.Body)
 	if readErr != nil {
-		return fmt.Errorf("failed reading session body-bytes: %w", readErr)
+		return "", fmt.Errorf("failed reading session body-bytes: %w", readErr)
 	} else if len(bodyBytes) == 0 {
-		return fmt.Errorf("empty session body-bytes")
+		return "", fmt.Errorf("empty session body-bytes")
 	}
 
 	sessionHosts := []string{}
@@ -234,14 +238,14 @@ func joinOrCreateSession(sessionID, relayAddress string) error {
 		}{}
 		unmarshalErr := json.Unmarshal(bodyBytes, &newSessionInfo)
 		if unmarshalErr != nil {
-			return fmt.Errorf("failed unmarshaling session POST response %s: %w", string(bodyBytes), unmarshalErr)
+			return "", fmt.Errorf("failed unmarshaling session POST response %s: %w", string(bodyBytes), unmarshalErr)
 		}
 		sessionID = newSessionInfo.SessionID
 		fmt.Print(newSessionInfo)
 	} else {
 		unmarshalErr := json.Unmarshal(bodyBytes, &sessionHosts)
 		if unmarshalErr != nil {
-			return fmt.Errorf("failed unmarshaling session PUT response %s: %s", string(bodyBytes), unmarshalErr)
+			return "", fmt.Errorf("failed unmarshaling session PUT response %s: %s", string(bodyBytes), unmarshalErr)
 		}
 		fmt.Print(sessionHosts)
 	}
@@ -264,12 +268,18 @@ func joinOrCreateSession(sessionID, relayAddress string) error {
 				updateSessionInfo()
 			}
 		}
-	}(context.Background(), time.Minute) // TODO(jack): FIX magic-number
+	}(context.Background(), HOST_REFRESH_INTERVAL) // TODO(jack): FIX magic-number
 
-	return nil
+	return sessionID, nil
 }
 
 func main() { //nolint:cyclop
+	// Create a channel to receive OS signals.
+	quit := make(chan os.Signal, 1)
+
+	// Notify the channel when a SIGINT or SIGTERM is received.
+	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
+
 	sessionID := ""
 	createSession := false
 	if len(os.Args) == 2 && os.Args[1] != "" {
@@ -341,7 +351,11 @@ func main() { //nolint:cyclop
 	log.Printf("relayed-address=%s", relayConn.LocalAddr().String())
 
 	// register relay-address
-	joinOrCreateSession(sessionID, relayConn.LocalAddr().String())
+	sessionID, err = joinOrCreateSession(sessionID, relayConn.LocalAddr().String())
+	if err != nil {
+		log.Fatalf("error joining or creating session %s: %s", sessionID, err.Error())
+	}
+	log.Printf("SESSION ID=%s", sessionID)
 
 	// If you provided `-ping`, perform a ping test against the
 	// relayConn we have just allocated.
@@ -352,8 +366,102 @@ func main() { //nolint:cyclop
 		}
 	}
 
-	// TODO(jack): actually run "forever" but listen for kill/quit
+	setupRelayExchange(client, relayConn)
+
+	log.Print("waiting for sig-quit")
+	<-quit
+	log.Print("quitting")
+}
+
+func setupRelayExchange(client *turn.Client, relayConn net.PacketConn) error { //nolint:cyclop
+	// Send BindingRequest to learn our external IP
+	mappedAddr, err := client.SendBindingRequest()
+	if err != nil {
+		return err
+	}
+
+	// Set up pinger socket (pingerConn)
+
+	pingerConn, err := net.ListenPacket("udp4", "0.0.0.0:0")
+	if err != nil {
+		log.Panicf("Failed to listen: %s", err)
+	}
+	defer func() {
+		if closeErr := pingerConn.Close(); closeErr != nil {
+			log.Panicf("Failed to close connection: %s", closeErr)
+		}
+	}()
+
+	// Punch a UDP hole for the relayConn by sending a data to the mappedAddr.
+	// This will trigger a TURN client to generate a permission request to the
+	// TURN server. After this, packets from the IP address will be accepted by
+	// the TURN server.
+	_, err = relayConn.WriteTo([]byte("Hello"), mappedAddr)
+	if err != nil {
+		return err
+	}
+
+	// Start read-loop on pingerConn
+	/*
+		go func() {
+			buf := make([]byte, 1600)
+			for {
+				n, from, pingerErr := pingerConn.ReadFrom(buf)
+				if pingerErr != nil {
+					break
+				}
+
+				msg := string(buf[:n])
+				if sentAt, pingerErr := time.Parse(time.RFC3339Nano, msg); pingerErr == nil {
+					rtt := time.Since(sentAt)
+					log.Printf("%d bytes from from %s time=%d ms\n", n, from.String(), int(rtt.Seconds()*1000))
+				}
+			}
+		}()
+	*/
+	// Start read-loop on relayConn
+	// TODO(jack): here woud be the place to READ packets from other Link relays
+	go func() {
+		buf := make([]byte, 1600)
+		for {
+			n, from, readerErr := relayConn.ReadFrom(buf)
+			if readerErr != nil {
+				break
+			}
+
+			// Echo back
+			if _, readerErr = relayConn.WriteTo(buf[:n], from); readerErr != nil {
+				break
+			}
+		}
+	}()
+
+	time.Sleep(500 * time.Millisecond)
+
+	// Send 10 packets from relayConn to the echo server
+	for i := 0; i < 1000; i++ {
+		msg := time.Now().Format(time.RFC3339Nano)
+		for _, turnHost := range getSessionHosts() {
+			// Using net.ResolveTCPAddr (for TCP addresses)
+			turnHostAddr, err := net.ResolveUDPAddr("udp", turnHost)
+			if err != nil {
+				log.Fatalf("Error resolving UDP address: %s", err.Error())
+			}
+			var netAddr net.Addr = turnHostAddr
+			fmt.Println("TCP Addr:", netAddr)
+			_, err = pingerConn.WriteTo([]byte(msg), relayConn.LocalAddr())
+			if err != nil {
+				return err
+			}
+		}
+
+		// For simplicity, this example does not wait for the pong (reply).
+		// Instead, sleep 1 second.
+		time.Sleep(time.Second)
+	}
+
 	time.Sleep(time.Minute * time.Duration(15))
+	return nil
 }
 
 func doPingTest(client *turn.Client, relayConn net.PacketConn) error { //nolint:cyclop

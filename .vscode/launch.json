@@ -31,7 +31,14 @@
             "request": "launch",
             "mode": "debug",
             "program": "${workspaceFolder}/cmd/turn_test/test_turn.go"
-        }
-
+        },
+        {
+            "name": "Test TURN with SESSION",
+            "type": "go",
+            "request": "launch",
+            "mode": "debug",
+            "program": "${workspaceFolder}/cmd/turn_test/test_turn.go",
+            "args": ["d0e31176-6fb3-489d-955b-f9dd0b0b9bd4"]
+        }        
     ]
 }
