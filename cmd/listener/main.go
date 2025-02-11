@@ -15,11 +15,12 @@ import (
 
 const (
 	UDP4MulticastAddress = "224.76.78.75:20808"
-	linkHeader           = "_asdp_v"
-	maxDatagramSize      = 8192
+	LinkHeader           = "_asdp_v"
+	MaxDatagramSize      = 8192
+	LinkPort             = ":20808"
 )
 
-func joinMulticastGroups(p *ipv4.PacketConn, groupIP net.IP) {
+func JoinMulticastGroups(p *ipv4.PacketConn, groupIP net.IP) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		log.Printf("Error listing interfaces: %v", err)
@@ -55,11 +56,8 @@ func joinMulticastGroups(p *ipv4.PacketConn, groupIP net.IP) {
 	}
 }
 
-func main() {
-	ctx := context.Background()
-
-	// Use ListenConfig to bind with reuse options.
-	lc := net.ListenConfig{
+func CreateListenConfig() (lc net.ListenConfig) {
+	lc = net.ListenConfig{
 		Control: func(network, address string, c syscall.RawConn) error {
 			var controlErr error
 			err := c.Control(func(fd uintptr) {
@@ -78,39 +76,19 @@ func main() {
 			return controlErr
 		},
 	}
+	return
+}
 
-	// Bind one UDP socket on all interfaces (0.0.0.0) at port 20808.
-	pc, err := lc.ListenPacket(ctx, "udp4", ":20808")
-	if err != nil {
-		log.Fatalf("Failed to bind UDP socket: %v", err)
+func Min(a, b int) int {
+	if a < b {
+		return a
 	}
-	defer pc.Close()
+	return b
+}
 
-	// Wrap the connection with ipv4.PacketConn to manage multicast.
-	p := ipv4.NewPacketConn(pc)
-	if err := p.SetControlMessage(ipv4.FlagDst|ipv4.FlagInterface, true); err != nil {
-		log.Printf("Error setting control message: %v", err)
-	}
-
-	// Optionally, set the underlying connection's read buffer.
-	if udpConn, ok := pc.(*net.UDPConn); ok {
-		if err := udpConn.SetReadBuffer(maxDatagramSize); err != nil {
-			log.Printf("Failed to set read buffer: %v", err)
-		}
-	}
-
-	// Determine the multicast IP.
-	multicastIPStr := strings.Split(UDP4MulticastAddress, ":")[0]
-	multicastIP := net.ParseIP(multicastIPStr)
-	if multicastIP == nil {
-		log.Fatalf("Invalid multicast IP: %s", multicastIPStr)
-	}
-
-	// Join the multicast group on all eligible interfaces.
-	joinMulticastGroups(p, multicastIP)
-
+func ListenForLinkPackets(p *ipv4.PacketConn, multicastIP net.IP, linkHeader string) {
 	log.Printf("Listening for Ableton Link packets on %s (bound on 0.0.0.0:20808)", UDP4MulticastAddress)
-	buf := make([]byte, maxDatagramSize)
+	buf := make([]byte, MaxDatagramSize)
 	for {
 		n, cm, src, err := p.ReadFrom(buf)
 		if err != nil {
@@ -125,7 +103,7 @@ func main() {
 		}
 
 		// For debugging, log the first 32 bytes.
-		log.Printf("Received packet from %v: % x", src, data[:min(n, 32)])
+		log.Printf("Received packet from %v: % x", src, data[:Min(n, 32)])
 
 		// Filter for packets that begin with the expected Link header.
 		if len(data) < len(linkHeader) || string(data[:len(linkHeader)]) != linkHeader {
@@ -170,9 +148,48 @@ func main() {
 	}
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
+func GetMulticastPacketConnection(pc net.PacketConn, linkMulticastAddress string) (*ipv4.PacketConn, net.IP, error) {
+	p := ipv4.NewPacketConn(pc)
+	if err := p.SetControlMessage(ipv4.FlagDst|ipv4.FlagInterface, true); err != nil {
+		return nil, nil, fmt.Errorf("Error setting control message: %w", err)
 	}
-	return b
+
+	// Optionally, set the underlying connection's read buffer.
+	if udpConn, ok := pc.(*net.UDPConn); ok {
+		if err := udpConn.SetReadBuffer(MaxDatagramSize); err != nil {
+			return nil, nil, fmt.Errorf("failed to set read buffer: %w", err)
+		}
+	}
+
+	// Determine the multicast IP.
+	multicastIPStr := strings.Split(linkMulticastAddress, ":")[0]
+	multicastIP := net.ParseIP(multicastIPStr)
+	if multicastIP == nil {
+		return nil, nil, fmt.Errorf("invalid multicast IP: %s", multicastIPStr)
+	}
+	return p, multicastIP, nil
+}
+
+func main() {
+	ctx := context.Background()
+
+	// Use ListenConfig to bind with reuse options.
+	lc := CreateListenConfig()
+
+	// Bind one UDP socket on all interfaces (0.0.0.0) at port 20808.
+	pc, err := lc.ListenPacket(ctx, "udp4", LinkPort)
+	if err != nil {
+		log.Fatalf("Failed to bind UDP socket: %v", err)
+	}
+	defer pc.Close()
+
+	// Wrap the connection with ipv4.PacketConn to manage multicast.
+	p, multicastIP, err := GetMulticastPacketConnection(pc, UDP4MulticastAddress)
+	if err != nil {
+		log.Fatalf("Error getting multicast connection: %s", err.Error())
+	}
+
+	// Join the multicast group on all eligible interfaces.
+	JoinMulticastGroups(p, multicastIP)
+	ListenForLinkPackets(p, multicastIP, LinkHeader)
 }
