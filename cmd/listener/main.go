@@ -265,6 +265,7 @@ type LinkPacketHeader struct {
 	Flags       uint8   // e.g., 0x05
 	Reserved    uint16  // expected to be 0x0000 (for validation)
 	HeaderExtra uint32  // additional header data
+	Checksum    uint32
 }
 
 type TLV struct {
@@ -290,6 +291,7 @@ func (lp *LinkPacket) String() string {
 	builder.WriteString(fmt.Sprintf("flags: %x\n", lp.Header.Flags))
 	builder.WriteString(fmt.Sprintf("reserved: %x\n", lp.Header.Reserved))
 	builder.WriteString(fmt.Sprintf("extra: %x\n", lp.Header.HeaderExtra))
+	builder.WriteString(fmt.Sprintf("checksum: %d\n", lp.Header.Checksum))
 
 	for _, tlv := range lp.TLVs {
 		key := tlv.Key
@@ -309,7 +311,7 @@ var tlvRegex = regexp.MustCompile(`^[a-z0-9]{4}$`)
 // When a TLV with key "sess" is encountered (which is exactly 12 bytes long),
 // the parser extracts the session ID from its value and splits TLVs accordingly.
 func ParseLinkPacket(data []byte) (*LinkPacket, error) {
-	const headerSize = 16
+	const headerSize = 20
 	if len(data) < headerSize {
 		return nil, errors.New("data too short for header")
 	}
@@ -324,13 +326,14 @@ func ParseLinkPacket(data []byte) (*LinkPacket, error) {
 	header.Flags = data[9]
 	header.Reserved = binary.BigEndian.Uint16(data[10:12])
 	header.HeaderExtra = binary.BigEndian.Uint32(data[12:16])
+	header.Checksum = binary.BigEndian.Uint32(data[16:20])
 
 	packet := &LinkPacket{
 		Header: header,
 		TLVs:   []*TLV{},
 	}
 
-	offset := headerSize + 4 // don't know what the
+	offset := headerSize // don't know what the
 
 	for offset < len(data) {
 		// Check if we can read in a key + length
