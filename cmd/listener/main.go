@@ -274,6 +274,44 @@ type TLV struct {
 	Value  []byte // For a "sess" TLV, only the first 4 bytes are used as the session ID.
 }
 
+// Timeline encapsulates the timeline data from a "tmln" TLV.
+type Timeline struct {
+	Beat  float64 // Current beat position.
+	Tempo float64 // Tempo in beats per minute.
+	Phase float64 // Phase offset for synchronization.
+}
+
+func (timeline *Timeline) String() string {
+	var builder strings.Builder
+	builder.WriteString(fmt.Sprintf("\tbeat: %f\n", timeline.Beat))
+	builder.WriteString(fmt.Sprintf("\ttempo: %f\n", timeline.Tempo))
+	builder.WriteString(fmt.Sprintf("\tphase: %f\n", timeline.Phase))
+	return builder.String()
+}
+
+// ParseTimeline converts a 24-byte slice (the value from a "tmln" TLV)
+// into a Timeline struct. It returns an error if the slice is not 24 bytes.
+func ParseTimeline(data []byte) (Timeline, error) {
+	if len(data) != 24 {
+		return Timeline{}, errors.New("invalid timeline data length; expected 24 bytes")
+	}
+	beatFixed := binary.BigEndian.Uint64(data[0:8])
+	tempoFixed := binary.BigEndian.Uint64(data[8:16])
+	phaseFixed := binary.BigEndian.Uint64(data[16:24])
+
+	// Convert from 32.32 fixed-point to float64.
+	const scale = 1 << 32
+	beat := float64(beatFixed) / float64(scale)
+	tempo := float64(tempoFixed) / float64(scale)
+	phase := float64(phaseFixed) / float64(scale)
+
+	return Timeline{
+		Beat:  beat,
+		Tempo: tempo,
+		Phase: phase,
+	}, nil
+}
+
 // LinkPacket holds the parsed header and two sets of TLVs.
 // PreSessTLVs contains all TLVs found before the "sess" TLV,
 // and PostSessTLVs contains all TLVs that follow.
@@ -297,6 +335,11 @@ func (lp *LinkPacket) String() string {
 		key := tlv.Key
 		if key == "mep4" {
 			builder.WriteString(fmt.Sprintf("key: %s (length=%d): %d %x\n", key, tlv.Length, tlv.Value[0:4], tlv.Value[4:]))
+		} else if key == "tmln" {
+			timeline, err := ParseTimeline(tlv.Value)
+			if err == nil {
+				builder.WriteString(fmt.Sprintf("key: %s (length=%d): %s\n", key, tlv.Length, timeline.String()))
+			}
 		} else {
 			builder.WriteString(fmt.Sprintf("key: %s (length=%d): %x\n", key, tlv.Length, tlv.Value))
 		}
