@@ -7,10 +7,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"ice-client/link"
 	"log"
 	"math"
 	"net"
+	"os"
+	"regexp"
 	"strings"
 	"syscall"
 
@@ -116,7 +117,7 @@ func ListenForLinkPackets(p *ipv4.PacketConn, multicastIP net.IP, linkHeader str
 	for {
 		n, cm, src, err := p.ReadFrom(buf)
 		if err != nil {
-			log.Printf("Read error: %v", err)
+			log.Printf("Read error: %s", err.Error())
 			continue
 		}
 		data := buf[:n]
@@ -140,22 +141,28 @@ func ListenForLinkPackets(p *ipv4.PacketConn, multicastIP net.IP, linkHeader str
 			continue
 		}
 
-		link.DeterminePacketType(data)
-		// Check that bytes 52-56 equal "sess".
-		sessHeader := string(data[52:56])
-		if sessHeader != "sess" {
-			log.Printf("Missing session header from %v", src)
+		linkPacket, err := ParseLinkPacket(data)
+		if err != nil {
 			continue
 		}
+		fmt.Print(linkPacket)
+		/*
+			link.DeterminePacketType(data)
+			// Check that bytes 52-56 equal "sess".
+			sessHeader := string(data[52:56])
+			if sessHeader != "sess" {
+				log.Printf("Missing session header from %v", src)
+				continue
+			}
 
-		// Extract session ID (bytes 56-64) and sender ID (last 4 bytes).
-		sessID := hex.EncodeToString(data[56:64])
-		senderID := fmt.Sprintf("%x", data[n-4:n])
-		tempoBytes := data[24:28]
-		tempo := ExtractTempo(tempoBytes)
-		timestamp := ExtractFrameTimestamp(data)
-		fmt.Printf("Extracted frame timestamp: %d\n", timestamp)
-
+			// Extract session ID (bytes 56-64) and sender ID (last 4 bytes).
+			sessID := hex.EncodeToString(data[56:64])
+			senderID := fmt.Sprintf("%x", data[n-4:n])
+			tempoBytes := data[24:28]
+			tempo := ExtractTempo(tempoBytes)
+			timestamp := ExtractFrameTimestamp(data)
+			fmt.Printf("Extracted frame timestamp: %d\n", timestamp)
+		*/
 		// Compute an MD5 hash for debugging.
 		hash := md5.Sum(data)
 		encodedHash := hex.EncodeToString(hash[:])
@@ -171,11 +178,15 @@ func ListenForLinkPackets(p *ipv4.PacketConn, multicastIP net.IP, linkHeader str
 		fmt.Printf("Interface %s: Received Link packet from %v:\n", ifaceName, src)
 		fmt.Printf("  Packet size: %d bytes\n", n)
 		fmt.Printf("  MD5 hash: %s\n", encodedHash)
-		fmt.Printf("  Session header: %s\n", sessHeader)
-		fmt.Printf("  Session ID: %s\n", sessID)
-		fmt.Printf("  Sender ID: %s\n", senderID)
-		fmt.Printf("  Tempo: %f\n", tempo)
+
+		/*
+			fmt.Printf("  Session header: %s\n", sessHeader)
+			fmt.Printf("  Session ID: %s\n", sessID)
+			fmt.Printf("  Sender ID: %s\n", senderID)
+			fmt.Printf("  Tempo: %f\n", tempo)
+		*/
 	}
+	fmt.Print("SHOULD NOT BE HERE")
 }
 
 func GetMulticastPacketConnection(pc net.PacketConn, linkMulticastAddress string) (*ipv4.PacketConn, net.IP, error) {
@@ -202,6 +213,8 @@ func GetMulticastPacketConnection(pc net.PacketConn, linkMulticastAddress string
 
 func main() {
 	ctx := context.Background()
+	// Create a channel to receive OS signals.
+	quit := make(chan os.Signal, 1)
 
 	// Use ListenConfig to bind with reuse options.
 	lc := CreateListenConfig()
@@ -222,47 +235,26 @@ func main() {
 	// Join the multicast group on all eligible interfaces.
 	JoinMulticastGroups(p, multicastIP)
 	go ListenForLinkPackets(p, multicastIP, LinkHeader)
+	/*
+		pc2, err := lc.ListenPacket(ctx, "udp4", DiscoveryPort)
+		if err != nil {
+			log.Fatalf("Failed to bind UDP socket: %v", err)
+		}
+		defer pc.Close()
 
-	pc2, err := lc.ListenPacket(ctx, "udp4", DiscoveryPort)
-	if err != nil {
-		log.Fatalf("Failed to bind UDP socket: %v", err)
-	}
-	defer pc.Close()
-	// Wrap the connection with ipv4.PacketConn to manage multicast.
-	p2, discoveryIP, err := GetMulticastPacketConnection(pc2, DiscoverPacketAddress)
-	if err != nil {
-		log.Fatalf("Error getting multicast connection: %s", err.Error())
-	}
+		// Wrap the connection with ipv4.PacketConn to manage multicast.
+		p2, discoveryIP, err := GetMulticastPacketConnection(pc2, DiscoverPacketAddress)
+		if err != nil {
+			log.Fatalf("Error getting multicast connection: %s", err.Error())
+		}
 
-	// Join the multicast group on all eligible interfaces.
-	JoinMulticastGroups(p2, discoveryIP)
-	go ListenForLinkPackets(p, discoveryIP, DiscoveryHeader)
-}
-
-// new
-type LinkPacketHeader struct {
-	Magic       [7]byte // e.g., "_asdp_v"
-	Version     uint8   // e.g., 0x01
-	PacketType  uint8   // e.g., 0x01 for state packet
-	Flags       uint8   // e.g., 0x05
-	Reserved    uint16  // expected to be 0x0000 (for validation)
-	HeaderExtra uint32  // additional header data
-}
-
-type TLV struct {
-	Key    string // For a standard TLV, this is 8 bytes; for "sess" TLV, it's 4 bytes ("sess")
-	Length uint32 // For a "sess" TLV, this will always be 8.
-	Value  []byte // For a "sess" TLV, only the first 4 bytes are used as the session ID.
-}
-
-// LinkPacket holds the parsed header and two sets of TLVs.
-// PreSessTLVs contains all TLVs found before the "sess" TLV,
-// and PostSessTLVs contains all TLVs that follow.
-type LinkPacket struct {
-	Header       LinkPacketHeader
-	PreSessTLVs  []TLV
-	SessionID    uint32 // Extracted from the "sess" TLV, if present.
-	PostSessTLVs []TLV
+		// Join the multicast group on all eligible interfaces.
+		JoinMulticastGroups(p2, discoveryIP)
+		go ListenForLinkPackets(p, discoveryIP, DiscoveryHeader)
+	*/
+	log.Print("waiting for sig-quit")
+	<-quit
+	log.Print("quitting")
 }
 
 /////////////////////////////////////
@@ -286,6 +278,33 @@ type LinkPacket struct {
 /////////////////////////////////////
 /////////////////////////////////////
 
+// new
+type LinkPacketHeader struct {
+	Magic       [7]byte // e.g., "_asdp_v"
+	Version     uint8   // e.g., 0x01
+	PacketType  uint8   // e.g., 0x01 for state packet
+	Flags       uint8   // e.g., 0x05
+	Reserved    uint16  // expected to be 0x0000 (for validation)
+	HeaderExtra uint32  // additional header data
+}
+
+type TLV struct {
+	Key    string // For a standard TLV, this is 8 bytes; for "sess" TLV, it's 4 bytes ("sess")
+	Length uint32 // For a "sess" TLV, this will always be 8.
+	Value  []byte // For a "sess" TLV, only the first 4 bytes are used as the session ID.
+}
+
+// LinkPacket holds the parsed header and two sets of TLVs.
+// PreSessTLVs contains all TLVs found before the "sess" TLV,
+// and PostSessTLVs contains all TLVs that follow.
+type LinkPacket struct {
+	Header    LinkPacketHeader
+	TLVMap    map[string]*TLV
+	SessionID uint32 // Extracted from the "sess" TLV, if present.
+}
+
+var tlvRegex = regexp.MustCompile(`^[a-z0-9]{4}$`)
+
 // ParseLinkPacket parses a raw Link packet from data.
 // It expects a 16-byte header, then one or more TLVs.
 // When a TLV with key "sess" is encountered (which is exactly 12 bytes long),
@@ -295,7 +314,10 @@ func ParseLinkPacket(data []byte) (*LinkPacket, error) {
 	if len(data) < headerSize {
 		return nil, errors.New("data too short for header")
 	}
-
+	//tmln
+	//sess
+	//stst
+	//mep4
 	var header LinkPacketHeader
 	copy(header.Magic[:], data[0:7])
 	header.Version = data[7]
@@ -305,61 +327,35 @@ func ParseLinkPacket(data []byte) (*LinkPacket, error) {
 	header.HeaderExtra = binary.BigEndian.Uint32(data[12:16])
 
 	packet := &LinkPacket{
-		Header:       header,
-		PreSessTLVs:  make([]TLV, 0),
-		PostSessTLVs: make([]TLV, 0),
+		Header: header,
+		TLVMap: map[string]*TLV{},
 	}
 
-	offset := headerSize
-	sessionFound := false
+	offset := headerSize + 4 // don't know what the
 
 	for offset < len(data) {
-		// Check if the next 4 bytes equal "sess".
-		if len(data)-offset >= 4 && string(data[offset:offset+4]) == "sess" {
-			// Session TLV must be exactly 12 bytes.
-			if len(data)-offset < 12 {
-				return nil, errors.New("data too short for session TLV")
-			}
-			// Read the key ("sess")
-			key := string(data[offset : offset+4])
-			fmt.Print(key)
-			// Read the length (should be 0x00000008)
-			length := binary.BigEndian.Uint32(data[offset+4 : offset+8])
-			if length != 8 {
-				return nil, errors.New("invalid session TLV length")
-			}
-			// Read the session ID (first 4 bytes of the value)
-			sessionID := binary.BigEndian.Uint32(data[offset+8 : offset+12])
-			packet.SessionID = sessionID
-
-			// Skip over this TLV.
-			offset += 12
-			sessionFound = true
-		} else {
-			// Parse a standard TLV: 8-byte key, 4-byte length, then value.
-			if len(data)-offset < 12 {
-				return nil, errors.New("data too short for TLV header")
-			}
-			key := string(data[offset : offset+8])
-			offset += 8
-
-			tlvLength := binary.BigEndian.Uint32(data[offset : offset+4])
-			offset += 4
-
-			if len(data)-offset < int(tlvLength) {
-				return nil, errors.New("data too short for TLV value")
-			}
-			value := make([]byte, tlvLength)
-			copy(value, data[offset:offset+int(tlvLength)])
-			offset += int(tlvLength)
-
-			tlv := TLV{Key: key, Length: tlvLength, Value: value}
-			if !sessionFound {
-				packet.PreSessTLVs = append(packet.PreSessTLVs, tlv)
-			} else {
-				packet.PostSessTLVs = append(packet.PostSessTLVs, tlv)
-			}
+		// Check if we can read in a key + length
+		if offset+8 > len(data) {
+			continue
 		}
+		key := string(data[offset : offset+4])
+		offset += 4
+		if !tlvRegex.MatchString(key) {
+			break
+		}
+
+		tlvLength := binary.BigEndian.Uint32(data[offset : offset+4])
+		offset += 4
+
+		if offset+int(tlvLength) > len(data) {
+			return nil, errors.New("data too short for TLV value")
+		}
+		value := make([]byte, tlvLength)
+		copy(value, data[offset:offset+int(tlvLength)])
+		offset += int(tlvLength)
+
+		tlv := TLV{Key: key, Length: tlvLength, Value: value}
+		packet.TLVMap[key] = &tlv
 	}
 
 	return packet, nil
@@ -435,16 +431,10 @@ func exampleUse() {
 
 	// Print Pre-session TLVs.
 	fmt.Println("\nPreSess TLVs:")
-	for _, tlv := range packet.PreSessTLVs {
+	for _, tlv := range packet.TLVMap {
 		fmt.Printf("  Key: %s, Length: %d, Value: %x\n", tlv.Key, tlv.Length, tlv.Value)
 	}
 
 	// Print the extracted session ID.
 	fmt.Printf("\nSession ID: 0x%x\n", packet.SessionID)
-
-	// Print Post-session TLVs.
-	fmt.Println("\nPostSess TLVs:")
-	for _, tlv := range packet.PostSessTLVs {
-		fmt.Printf("  Key: %s, Length: %d, Value: %x\n", tlv.Key, tlv.Length, tlv.Value)
-	}
 }
