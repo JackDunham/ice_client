@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math"
 	"net"
 	"os"
 	"regexp"
@@ -94,6 +93,7 @@ func Min(a, b int) int {
 	return b
 }
 
+/*
 // Suppose data is your entire Ableton Link packet
 func ExtractTempo(tempoBytes []byte) float32 {
 	// Convert the 4 bytes from big-endian to a uint32.
@@ -102,7 +102,9 @@ func ExtractTempo(tempoBytes []byte) float32 {
 	tempo := math.Float32frombits(bits)
 	return tempo
 }
+*/
 
+/*
 func ExtractFrameTimestamp(packet []byte) uint64 {
 	if len(packet) < 32 {
 		log.Fatalf("Packet too short: expected at least 32 bytes, got %d", len(packet))
@@ -110,6 +112,7 @@ func ExtractFrameTimestamp(packet []byte) uint64 {
 	// Extract bytes 24 to 31 (8 bytes) as the frame timestamp.
 	return binary.BigEndian.Uint64(packet[56:64])
 }
+*/
 
 func ListenForLinkPackets(p *ipv4.PacketConn, multicastIP net.IP, linkHeader string) {
 	log.Printf("Listening for Ableton Link packets on %s (bound on 0.0.0.0:20808)", UDP4MulticastAddress)
@@ -145,24 +148,8 @@ func ListenForLinkPackets(p *ipv4.PacketConn, multicastIP net.IP, linkHeader str
 		if err != nil {
 			continue
 		}
-		fmt.Print(linkPacket)
-		/*
-			link.DeterminePacketType(data)
-			// Check that bytes 52-56 equal "sess".
-			sessHeader := string(data[52:56])
-			if sessHeader != "sess" {
-				log.Printf("Missing session header from %v", src)
-				continue
-			}
+		fmt.Printf("%s\n", linkPacket.String())
 
-			// Extract session ID (bytes 56-64) and sender ID (last 4 bytes).
-			sessID := hex.EncodeToString(data[56:64])
-			senderID := fmt.Sprintf("%x", data[n-4:n])
-			tempoBytes := data[24:28]
-			tempo := ExtractTempo(tempoBytes)
-			timestamp := ExtractFrameTimestamp(data)
-			fmt.Printf("Extracted frame timestamp: %d\n", timestamp)
-		*/
 		// Compute an MD5 hash for debugging.
 		hash := md5.Sum(data)
 		encodedHash := hex.EncodeToString(hash[:])
@@ -178,15 +165,7 @@ func ListenForLinkPackets(p *ipv4.PacketConn, multicastIP net.IP, linkHeader str
 		fmt.Printf("Interface %s: Received Link packet from %v:\n", ifaceName, src)
 		fmt.Printf("  Packet size: %d bytes\n", n)
 		fmt.Printf("  MD5 hash: %s\n", encodedHash)
-
-		/*
-			fmt.Printf("  Session header: %s\n", sessHeader)
-			fmt.Printf("  Session ID: %s\n", sessID)
-			fmt.Printf("  Sender ID: %s\n", senderID)
-			fmt.Printf("  Tempo: %f\n", tempo)
-		*/
 	}
-	fmt.Print("SHOULD NOT BE HERE")
 }
 
 func GetMulticastPacketConnection(pc net.PacketConn, linkMulticastAddress string) (*ipv4.PacketConn, net.IP, error) {
@@ -299,8 +278,28 @@ type TLV struct {
 // and PostSessTLVs contains all TLVs that follow.
 type LinkPacket struct {
 	Header    LinkPacketHeader
-	TLVMap    map[string]*TLV
+	TLVs      []*TLV
 	SessionID uint32 // Extracted from the "sess" TLV, if present.
+}
+
+func (lp *LinkPacket) String() string {
+	var builder strings.Builder
+	builder.WriteString(fmt.Sprintf("magic: %s\n", string(lp.Header.Magic[:])))
+	builder.WriteString(fmt.Sprintf("version: %x\n", lp.Header.Version))
+	builder.WriteString(fmt.Sprintf("type: %x\n", lp.Header.PacketType))
+	builder.WriteString(fmt.Sprintf("flags: %x\n", lp.Header.Flags))
+	builder.WriteString(fmt.Sprintf("reserved: %x\n", lp.Header.Reserved))
+	builder.WriteString(fmt.Sprintf("extra: %x\n", lp.Header.HeaderExtra))
+
+	for _, tlv := range lp.TLVs {
+		key := tlv.Key
+		if key == "mep4" {
+			builder.WriteString(fmt.Sprintf("key: %s (length=%d): %d %x\n", key, tlv.Length, tlv.Value[0:4], tlv.Value[4:]))
+		} else {
+			builder.WriteString(fmt.Sprintf("key: %s (length=%d): %x\n", key, tlv.Length, tlv.Value))
+		}
+	}
+	return builder.String()
 }
 
 var tlvRegex = regexp.MustCompile(`^[a-z0-9]{4}$`)
@@ -328,7 +327,7 @@ func ParseLinkPacket(data []byte) (*LinkPacket, error) {
 
 	packet := &LinkPacket{
 		Header: header,
-		TLVMap: map[string]*TLV{},
+		TLVs:   []*TLV{},
 	}
 
 	offset := headerSize + 4 // don't know what the
@@ -355,7 +354,7 @@ func ParseLinkPacket(data []byte) (*LinkPacket, error) {
 		offset += int(tlvLength)
 
 		tlv := TLV{Key: key, Length: tlvLength, Value: value}
-		packet.TLVMap[key] = &tlv
+		packet.TLVs = append(packet.TLVs, &tlv)
 	}
 
 	return packet, nil
@@ -431,7 +430,7 @@ func exampleUse() {
 
 	// Print Pre-session TLVs.
 	fmt.Println("\nPreSess TLVs:")
-	for _, tlv := range packet.TLVMap {
+	for _, tlv := range packet.TLVs {
 		fmt.Printf("  Key: %s, Length: %d, Value: %x\n", tlv.Key, tlv.Length, tlv.Value)
 	}
 
