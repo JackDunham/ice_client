@@ -31,6 +31,8 @@ func main() {
 	// Join the multicast group on all eligible interfaces.
 	multicast.JoinMulticastGroups(p, multicastIP)
 	go multicast.ListenForLinkPackets(p, multicastIP, multicast.LinkHeader)
+	// TEST that we can actually SEND a link-packet
+	multicast.SendLinkPacket(p, multicastIP, multicast.LinkHeader, []byte("DERPDERPDERP"))
 	log.Print("waiting for sig-quit")
 	<-quit
 	log.Print("quitting")
