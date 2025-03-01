@@ -93,27 +93,6 @@ func Min(a, b int) int {
 	return b
 }
 
-/*
-// Suppose data is your entire Ableton Link packet
-func ExtractTempo(tempoBytes []byte) float32 {
-	// Convert the 4 bytes from big-endian to a uint32.
-	bits := binary.BigEndian.Uint32(tempoBytes)
-	// Convert the bits to a float32.
-	tempo := math.Float32frombits(bits)
-	return tempo
-}
-*/
-
-/*
-func ExtractFrameTimestamp(packet []byte) uint64 {
-	if len(packet) < 32 {
-		log.Fatalf("Packet too short: expected at least 32 bytes, got %d", len(packet))
-	}
-	// Extract bytes 24 to 31 (8 bytes) as the frame timestamp.
-	return binary.BigEndian.Uint64(packet[56:64])
-}
-*/
-
 func ListenForLinkPackets(p *ipv4.PacketConn, multicastIP net.IP, linkHeader string) {
 	log.Printf("Listening for Ableton Link packets on %s (bound on 0.0.0.0:20808)", UDP4MulticastAddress)
 	buf := make([]byte, MaxDatagramSize)
