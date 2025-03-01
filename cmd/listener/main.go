@@ -283,7 +283,7 @@ type Timeline struct {
 
 func (timeline *Timeline) String() string {
 	var builder strings.Builder
-	builder.WriteString(fmt.Sprintf("\tbeat: %f\n", timeline.Beat))
+	builder.WriteString(fmt.Sprintf("\n\tbeat: %f\n", timeline.Beat))
 	builder.WriteString(fmt.Sprintf("\ttempo: %f\n", timeline.Tempo))
 	builder.WriteString(fmt.Sprintf("\tphase: %f\n", timeline.Phase))
 	return builder.String()
