@@ -430,7 +430,8 @@ func setupRelayExchange(client *turn.Client, relayConn net.PacketConn) error { /
 			}
 
 			// Echo back
-			if _, readerErr = relayConn.WriteTo(buf[:n], from); readerErr != nil {
+			//if _, readerErr = relayConn.WriteTo(buf[:n], from); readerErr != nil {
+			if _, readerErr = relayConn.WriteTo(append([]byte("recevied: "), buf[:n]...), from); readerErr != nil {
 				break
 			}
 		}
