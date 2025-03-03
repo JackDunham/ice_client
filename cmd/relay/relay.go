@@ -42,6 +42,7 @@ type TurnRelay struct {
 	TurnClient   *turn.Client
 	SessionHosts []net.Addr
 	sessionMutex sync.Mutex
+	ThisHost     string
 }
 
 // IceServers holds the TURN/STUN server details.
@@ -125,12 +126,15 @@ func (turnRelay *TurnRelay) Shutdown() {
 }
 
 func (turnRelay *TurnRelay) RefreshLinkSession() {
-	ticker := time.NewTicker(15 * time.Second)
+	ticker := time.NewTicker(5 * time.Second)
 	for {
 		select {
 		case <-turnRelay.KillChannel:
 			return
 		case <-ticker.C:
+			if turnRelay.Session == nil {
+				continue
+			}
 			sessionHosts := []net.Addr{}
 			turnRelay.Session.UpdateSessionInfo()
 			for _, turnHost := range turnRelay.Session.GetSessionHosts() {
@@ -145,6 +149,10 @@ func (turnRelay *TurnRelay) RefreshLinkSession() {
 			turnRelay.SessionHosts = sessionHosts
 		}
 	}
+}
+
+func (turnRelay *TurnRelay) SetLinkSession(session *session.LinkSession) {
+	turnRelay.Session = session
 }
 
 func StartTurnClient(fromRelay, toRelay chan []byte) (*TurnRelay, error) { //nolint:cyclop
@@ -165,11 +173,6 @@ func StartTurnClient(fromRelay, toRelay chan []byte) (*TurnRelay, error) { //nol
 	if err != nil {
 		log.Panicf("Failed to listen: %s", err)
 	}
-	defer func() {
-		if closeErr := conn.Close(); closeErr != nil {
-			log.Panicf("Failed to close connection: %s", closeErr)
-		}
-	}()
 
 	turnServerAddr := fmt.Sprintf("%s:%s", turnRelay.Credentials.Host, turnRelay.Credentials.Port)
 
@@ -199,11 +202,12 @@ func StartTurnClient(fromRelay, toRelay chan []byte) (*TurnRelay, error) { //nol
 	// Allocate a relay socket on the TURN server. On success, it
 	// will return a net.PacketConn which represents the remote
 	// socket.
-	relayConn, err := client.Allocate()
+	turnRelay.RelayConn, err = client.Allocate()
 	if err != nil {
 		log.Panicf("Failed to allocate TURN relay connection: %s", err.Error())
 	}
-	log.Printf("relayed-address=%s", relayConn.LocalAddr().String())
+	log.Printf("relayed-address=%s", turnRelay.RelayConn.LocalAddr().String())
+	turnRelay.ThisHost = turnRelay.RelayConn.LocalAddr().String()
 
 	mappedAddr, err := client.SendBindingRequest()
 	if err != nil {
