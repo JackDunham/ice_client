@@ -165,22 +165,23 @@ func (ls *LinkSession) JoinOrCreateSession(sessionID, relayAddress string) (stri
 	ls.ThisHost = relayAddress
 	ls.UpdateSessionHosts(sessionHosts)
 
-	// start async go-routine to periodically check for new-hosts joining the session
-	go func(ctx context.Context, interval time.Duration, ls *LinkSession) {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop() // Ensure ticker is stopped when done.
+	/*
+		// start async go-routine to periodically check for new-hosts joining the session
+		go func(ctx context.Context, interval time.Duration, ls *LinkSession) {
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop() // Ensure ticker is stopped when done.
 
-		for {
-			select {
-			case <-ctx.Done():
-				fmt.Println("Context cancelled, stopping periodic task")
-				return
-			case t := <-ticker.C:
-				fmt.Printf("Updating session info %v\n", t)
-				ls.UpdateSessionInfo()
+			for {
+				select {
+				case <-ctx.Done():
+					fmt.Println("Context cancelled, stopping periodic task")
+					return
+				case t := <-ticker.C:
+					fmt.Printf("Updating session info %v\n", t)
+					ls.UpdateSessionInfo()
+				}
 			}
-		}
-	}(context.Background(), HOST_REFRESH_INTERVAL, ls) // TODO(jack): FIX magic-number
-
+		}(context.Background(), HOST_REFRESH_INTERVAL, ls) // TODO(jack): FIX magic-number
+	*/
 	return sessionID, nil
 }

@@ -125,7 +125,28 @@ func (turnRelay *TurnRelay) Shutdown() {
 	turnRelay.TurnClient.Close()
 }
 
-func (turnRelay *TurnRelay) RefreshLinkSession() {
+// Set external/turn address of relay targets
+func (turnRelay *TurnRelay) SetSessionHosts(hostStrings []string) error {
+	turnRelay.sessionMutex.Lock()
+	defer turnRelay.sessionMutex.Unlock()
+
+	sessionHosts := []net.Addr{}
+	for _, turnHost := range hostStrings {
+		// Using net.ResolveTCPAddr (for TCP addresses)
+		turnHostAddr, err := net.ResolveUDPAddr("udp", turnHost)
+		if err != nil {
+			return fmt.Errorf("error resolving UDP address: %w", err)
+		}
+		var netAddr net.Addr = turnHostAddr
+		sessionHosts = append(sessionHosts, netAddr)
+	}
+	turnRelay.SessionHosts = sessionHosts
+	return nil
+}
+
+/*
+// TODO(jack): left-off, here
+func (turnRelay *TurnRelay) RefreshLinkSession(hostString []string) error {
 	ticker := time.NewTicker(5 * time.Second)
 	for {
 		select {
@@ -136,6 +157,7 @@ func (turnRelay *TurnRelay) RefreshLinkSession() {
 				continue
 			}
 			sessionHosts := []net.Addr{}
+			// TODO(jack): panic is happening, here (below)
 			turnRelay.Session.UpdateSessionInfo()
 			for _, turnHost := range turnRelay.Session.GetSessionHosts() {
 				// Using net.ResolveTCPAddr (for TCP addresses)
@@ -150,10 +172,7 @@ func (turnRelay *TurnRelay) RefreshLinkSession() {
 		}
 	}
 }
-
-func (turnRelay *TurnRelay) SetLinkSession(session *session.LinkSession) {
-	turnRelay.Session = session
-}
+*/
 
 func StartTurnClient(fromRelay, toRelay chan []byte) (*TurnRelay, error) { //nolint:cyclop
 	// Create a channel to receive OS signals.
@@ -230,7 +249,7 @@ func StartTurnClient(fromRelay, toRelay chan []byte) (*TurnRelay, error) { //nol
 	if err != nil {
 		log.Panicf("Failed to write initial packet to relay-connection: %s", err.Error())
 	}
-	go turnRelay.RefreshLinkSession()
+
 	go turnRelay.ReadFromRelay()
 	go turnRelay.WriteToRelay()
 

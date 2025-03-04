@@ -4,8 +4,7 @@ import (
 	"fmt"
 	"ice-client/session"
 	"testing"
-
-	"github.com/google/uuid"
+	"time"
 )
 
 // TestAdd is a simple test for a function that adds two integers.
@@ -25,10 +24,16 @@ func TestRelay(t *testing.T) {
 	}
 	fmt.Printf("relay1 host: %+v", relay1.RelayConn.LocalAddr())
 
-	sessionID := uuid.New().String()
-	relay1.SetLinkSession(&session.LinkSession{SessionID: sessionID, ThisHost: relay1.ThisHost})
-	relay2.SetLinkSession(&session.LinkSession{SessionID: sessionID, ThisHost: relay2.ThisHost})
+	linkSession1 := &session.LinkSession{}
+	linkSession1.JoinOrCreateSession("", relay1.ThisHost)
 
+	linkSession2 := &session.LinkSession{}
+	linkSession2.JoinOrCreateSession(linkSession1.SessionID, relay2.ThisHost)
+
+	relay1.SetSessionHosts(linkSession1.Hosts)
+	relay2.SetSessionHosts(linkSession2.Hosts)
+
+	time.Sleep(time.Hour)
 	relay1.Shutdown()
 	relay2.Shutdown()
 
