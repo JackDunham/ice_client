@@ -122,7 +122,9 @@ func (turnRelay *TurnRelay) Shutdown() {
 	if closeErr := turnRelay.UdpConn.Close(); closeErr != nil {
 		log.Panicf("Failed to close TURN connection: %s", closeErr.Error())
 	}
-	turnRelay.TurnClient.Close()
+	if turnRelay.TurnClient != nil {
+		turnRelay.TurnClient.Close()
+	}
 }
 
 // Set external/turn address of relay targets
@@ -251,7 +253,7 @@ func StartTurnClient(fromRelay, toRelay chan []byte) (*TurnRelay, error) { //nol
 	}
 
 	go turnRelay.ReadFromRelay()
-	go turnRelay.WriteToRelay()
+	//go turnRelay.WriteToRelay()
 
 	return turnRelay, nil
 }
@@ -284,20 +286,37 @@ func (turnRelay *TurnRelay) ReadFromRelay() error {
 	}
 }
 
-func (turnRelay *TurnRelay) WriteToRelay() error {
-	// Send 10 packets from relayConn to the echo server
-	select {
-	case msg := <-turnRelay.ToRelay:
-		for _, netAddr := range turnRelay.SessionHosts {
-			fmt.Printf("Write bytes to Host Addr: +%v", netAddr)
-			_, err := turnRelay.RelayConn.WriteTo(msg, netAddr)
-			if err != nil {
-				fmt.Printf("Error writing bytes to Host Addr +%v: %s", netAddr, err.Error())
+/*
+	func (turnRelay *TurnRelay) WriteToRelay() error {
+		for {
+			select {
+			case msg := <-turnRelay.ToRelay:
+				for _, netAddr := range turnRelay.SessionHosts {
+					fmt.Printf("Write bytes to Host Addr: +%v", netAddr)
+					_, err := turnRelay.RelayConn.WriteTo(msg, netAddr)
+					if err != nil {
+						fmt.Printf("Error writing bytes to Host Addr +%v: %s", netAddr, err.Error())
+					}
+				}
+			case <-turnRelay.KillChannel:
+				return nil
+			default:
+				fmt.Print("waiting to send")
 			}
 		}
-	case <-turnRelay.KillChannel:
-		return nil
+		return nil,
 	}
+*/
+func (turnRelay *TurnRelay) WriteToRelay(msg []byte) error {
+	for _, netAddr := range turnRelay.SessionHosts {
+		fmt.Printf("Write bytes to Host Addr: +%v", netAddr)
+		n, err := turnRelay.UdpConn.WriteTo(msg, netAddr)
+		if err != nil {
+			fmt.Printf("Error writing bytes to Host Addr +%v: %s", netAddr, err.Error())
+		} else {
+			fmt.Printf("wrote %d bytes to %+v", n, netAddr)
+		}
 
+	}
 	return nil
 }
