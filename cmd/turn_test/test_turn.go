@@ -92,7 +92,13 @@ func getTurnCredentials() (*TurnCredentials, error) {
 }
 
 func getHostPortUserCredRealm(creds *TurnCredentials) (host, port, user, cred, realm string) {
-	hostAndPort := creds.IceServers.Urls[1]
+	hostAndPort := ""
+	for _, tempHostPort := range creds.IceServers.Urls {
+		if strings.HasPrefix(tempHostPort, "turn:") {
+			hostAndPort = tempHostPort
+			break
+		}
+	}
 	host = strings.TrimPrefix(hostAndPort[0:strings.LastIndex(hostAndPort, ":")], "turn:")
 	port = strings.TrimPrefix(strings.Split(hostAndPort[strings.LastIndex(hostAndPort, ":"):], "?")[0], ":")
 	user = creds.IceServers.Username
