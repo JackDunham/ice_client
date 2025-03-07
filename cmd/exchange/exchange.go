@@ -1,16 +1,77 @@
 package main
 
 import (
+	"context"
+	"crypto/md5"
+	"encoding/hex"
 	"flag"
 	"fmt"
+	"ice-client/multicast"
 	"ice-client/relay"
 	"ice-client/session"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"golang.org/x/net/ipv4"
 )
+
+func StartLinkRelay(fromLocalNet chan []byte) (*LinkRelay, error) {
+	ctx := context.Background()
+	killChan := make(chan bool)
+	// Use ListenConfig to bind with reuse options.
+	lc := multicast.CreateListenConfig()
+
+	// Bind one UDP socket on all interfaces (0.0.0.0) at port 20808.
+	pc, err := lc.ListenPacket(ctx, "udp4", multicast.LinkPort)
+	if err != nil {
+		log.Fatalf("Failed to bind UDP socket: %v", err)
+	}
+	defer pc.Close()
+
+	// Wrap the connection with ipv4.PacketConn to manage multicast.
+	p, multicastIP, err := multicast.GetMulticastPacketConnection(pc, multicast.UDP4MulticastAddress)
+	if err != nil {
+		log.Fatalf("Error getting multicast connection: %s", err.Error())
+	}
+
+	// Join the multicast group on all eligible interfaces.
+	multicast.JoinMulticastGroups(p, multicastIP)
+	// TODO(jack):
+	go multicast.ListenForLinkPacketsUsingChannels(p, multicastIP, multicast.LinkHeader, fromLocalNet, killChan)
+
+	//  TEST that we can actually SEND a link-packet
+	//multicast.SendLinkPacket(p, multicastIP, multicast.LinkHeader, []byte("DERPDERPDERP"))
+
+	return &LinkRelay{FromLocalNetwork: fromLocalNet, KillChan: killChan, PacketConn: p, MulticastIP: multicastIP}, nil
+}
+
+type LinkRelay struct {
+	FromLocalNetwork chan []byte
+	KillChan         chan bool
+	PacketConn       *ipv4.PacketConn
+	MulticastIP      net.IP
+}
+
+func (lr *LinkRelay) SendToLocalNetwork(msg []byte) error {
+	hash := md5.Sum(msg)
+	encodedHash := hex.EncodeToString(hash[:])
+	fmt.Print(encodedHash)
+
+	err := multicast.SendLinkPacket(lr.PacketConn, lr.MulticastIP, multicast.LinkHeader, msg)
+	if err != nil {
+		return fmt.Errorf("error sending link packet: %w", err)
+	}
+	return nil
+}
+
+func (lr *LinkRelay) Shutdown() error {
+	close(lr.KillChan)
+	return nil
+}
 
 // Exchange Link packets between local and remote network(s)
 func main() {
@@ -36,10 +97,10 @@ func main() {
 	// Parse the flags.
 	flag.Parse()
 
-	fromChan := make(chan []byte, 1024)
-	toChan := make(chan []byte, 1024)
+	fromRelay := make(chan []byte, 1024)
+	fromLocalNet := make(chan []byte, 1024)
 
-	relay1, err := relay.StartTurnClient(fromChan, toChan)
+	relay1, err := relay.StartTurnClient(fromRelay)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -67,22 +128,36 @@ func main() {
 		}
 	}(linkSession1, relay1, done)
 
+	linkRelay, err := StartLinkRelay(fromLocalNet)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	// listen for message from the "outside", to this relay endpoint
-	go func(relay1 *relay.TurnRelay, done chan bool) {
+	go func(relay1 *relay.TurnRelay, done chan bool, linkRelay *LinkRelay) {
 		for {
 			select {
-			case msg := <-relay1.FromRelay:
+			case msg := <-relay1.FromRelay: // TODO(jack): could use the local variable
 				fmt.Printf("received: %s", string(msg))
-				// TODO(jack): forward to UDP multicast
+				linkRelay.SendToLocalNetwork(msg)
 			case <-done:
 				return
 			}
 		}
-	}(relay1, done)
+	}(relay1, done, linkRelay)
 
-	// TODO(jack): listen for LINK messages, on UDP, and relay to
-	// other hosts in the link-session
-	relay1.WriteToRelay([]byte("HELLLLOOOOOOOO"))
+	// listen for LINK messages, on UDP, and relay to other hosts in the link-session
+	go func(relay1 *relay.TurnRelay, done chan bool, linkRelay *LinkRelay) {
+		for {
+			select {
+			case msg := <-linkRelay.FromLocalNetwork: // TODO(jack): could use the local variable
+				fmt.Printf("captured: %s", string(msg))
+				relay1.WriteToRelay(msg)
+			case <-done:
+				return
+			}
+		}
+	}(relay1, done, linkRelay)
 
 	fmt.Println("Waiting for termination signal")
 	<-done

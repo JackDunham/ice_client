@@ -12,13 +12,13 @@ func TestRelay(t *testing.T) {
 	fromChan := make(chan []byte, 1024)
 	toChan := make(chan []byte, 1024)
 
-	relay1, err := StartTurnClient(fromChan, toChan)
+	relay1, err := StartTurnClient(fromChan)
 	if err != nil {
 		t.Fatal(err)
 	}
 	fmt.Printf("relay1 host: %+v", relay1.RelayConn.LocalAddr())
 
-	relay2, err := StartTurnClient(fromChan, toChan)
+	relay2, err := StartTurnClient(toChan)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,11 +36,11 @@ func TestRelay(t *testing.T) {
 	relay2.SetSessionHosts(linkSession2.Hosts)
 
 	go func() {
-		msg := <-relay1.FromRelay
-		fmt.Printf("received: %s", string(msg))
+		msg := <-relay2.FromRelay
+		fmt.Printf("\n\n\nreceived: %s", string(msg))
 	}()
 	relay1.WriteToRelay([]byte("HELLLLOOOOOOOO"))
-	time.Sleep(time.Minute)
+	time.Sleep(time.Second * 15)
 	relay1.Shutdown()
 	relay2.Shutdown()
 

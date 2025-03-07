@@ -36,7 +36,6 @@ type TurnRelay struct {
 	UdpConn      net.PacketConn
 	Session      *session.LinkSession
 	FromRelay    chan []byte
-	ToRelay      chan []byte
 	KillChannel  chan bool
 	Credentials  *TurnCredentials
 	TurnClient   *turn.Client
@@ -67,7 +66,13 @@ type TurnCredentialsPostBody struct {
 }
 
 func getHostPortUserCredRealm(creds *TurnCredentials) (host, port, user, cred, realm string) {
-	hostAndPort := creds.IceServers.Urls[1]
+	hostAndPort := ""
+	for _, tempHostPort := range creds.IceServers.Urls {
+		if strings.HasPrefix(tempHostPort, "turn:") {
+			hostAndPort = tempHostPort
+			break
+		}
+	}
 	host = strings.TrimPrefix(hostAndPort[0:strings.LastIndex(hostAndPort, ":")], "turn:")
 	port = strings.TrimPrefix(strings.Split(hostAndPort[strings.LastIndex(hostAndPort, ":"):], "?")[0], ":")
 	user = creds.IceServers.Username
@@ -176,11 +181,11 @@ func (turnRelay *TurnRelay) RefreshLinkSession(hostString []string) error {
 }
 */
 
-func StartTurnClient(fromRelay, toRelay chan []byte) (*TurnRelay, error) { //nolint:cyclop
+func StartTurnClient(fromRelay chan []byte) (*TurnRelay, error) { //nolint:cyclop
 	// Create a channel to receive OS signals.
 	//quit := make(chan os.Signal, 1)
 	killChan := make(chan bool)
-	turnRelay := &TurnRelay{FromRelay: fromRelay, ToRelay: toRelay, KillChannel: killChan}
+	turnRelay := &TurnRelay{FromRelay: fromRelay, KillChannel: killChan}
 	var err error
 
 	turnRelay.Credentials, err = getTurnCredentials()

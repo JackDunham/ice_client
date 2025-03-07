@@ -39,6 +39,14 @@
             "mode": "debug",
             "program": "${workspaceFolder}/cmd/turn_test/test_turn.go",
             "args": ["d0e31176-6fb3-489d-955b-f9dd0b0b9bd4"]
-        }        
+        },
+        {
+            "name": "Exchange",
+            "type": "go",
+            "request": "launch",
+            "mode": "debug",
+            "program": "${workspaceFolder}/cmd/exchange/exchange.go",
+            "args": ["d0e31176-6fb3-489d-955b-f9dd0b0b9bd4"]
+        }                
     ]
 }
