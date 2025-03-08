@@ -181,7 +181,7 @@ func (turnRelay *TurnRelay) RefreshLinkSession(hostString []string) error {
 }
 */
 
-func StartTurnClient(fromRelay chan []byte) (*TurnRelay, error) { //nolint:cyclop
+func StartTurnClient(fromRelay chan []byte, ctx context.Context) (*TurnRelay, error) { //nolint:cyclop
 	// Create a channel to receive OS signals.
 	//quit := make(chan os.Signal, 1)
 	killChan := make(chan bool)
@@ -257,17 +257,18 @@ func StartTurnClient(fromRelay chan []byte) (*TurnRelay, error) { //nolint:cyclo
 		log.Panicf("Failed to write initial packet to relay-connection: %s", err.Error())
 	}
 
-	go turnRelay.ReadFromRelay()
+	go turnRelay.ReadFromRelay(ctx)
 	//go turnRelay.WriteToRelay()
 
 	return turnRelay, nil
 }
 
-func (turnRelay *TurnRelay) ReadFromRelay() error {
+func (turnRelay *TurnRelay) ReadFromRelay(ctx context.Context) error {
 	buf := make([]byte, 1600)
 	for {
 		select {
-		case <-turnRelay.KillChannel:
+		case <-ctx.Done():
+			turnRelay.Shutdown()
 			return nil
 		default:
 			n, from, readerErr := turnRelay.RelayConn.ReadFrom(buf)

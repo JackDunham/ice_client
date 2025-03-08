@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
+	"ice-client/link"
 	"ice-client/multicast"
 	"ice-client/relay"
 	"ice-client/session"
@@ -75,21 +76,18 @@ func (lr *LinkRelay) Shutdown() error {
 
 // Exchange Link packets between local and remote network(s)
 func main() {
-	// Ensure we can terminate politely:
-	// Create a channel to receive OS signals.
-	signals := make(chan os.Signal, 1)
-	// We'll also use a channel to know when to exit.
-	done := make(chan bool, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	// Tell signal.Notify which signals to relay.
-	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGHUP)
+	// Set up a channel to receive OS signals.
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGHUP)
 
-	// Start a goroutine to handle incoming signals.
+	// Launch a goroutine to wait for a quit signal.
 	go func() {
-		sig := <-signals
-		fmt.Printf("Received signal: %v\n", sig)
-		// Do any cleanup here if necessary.
-		close(done)
+		sig := <-sigChan
+		log.Printf("Received signal: %v. Cancelling context...", sig)
+		cancel()
 	}()
 
 	// Get session-ID from "session" flag (if present)
@@ -97,15 +95,19 @@ func main() {
 	// Parse the flags.
 	flag.Parse()
 
+	/////////////////////
+	/////////////////////
+	// Setup TURN relay
+	/////////////////////
+	/////////////////////
 	fromRelay := make(chan []byte, 1024)
-	fromLocalNet := make(chan []byte, 1024)
-
-	relay1, err := relay.StartTurnClient(fromRelay)
+	relay1, err := relay.StartTurnClient(fromRelay, ctx)
 	if err != nil {
 		log.Fatal(err)
 	}
 	fmt.Printf("relay1 host: %+v", relay1.RelayConn.LocalAddr())
 
+	// Join or create link session
 	linkSession1 := &session.LinkSession{}
 	if sessionID == nil {
 		linkSession1.JoinOrCreateSession("", relay1.ThisHost)
@@ -114,54 +116,85 @@ func main() {
 	}
 	linkSession1.JoinOrCreateSession("", relay1.ThisHost)
 
+	/////////////////////
+	/////////////////////
 	// Keep the link session + relay updated
-	go func(linkSession1 *session.LinkSession, relay1 *relay.TurnRelay, done chan bool) {
+	/////////////////////
+	/////////////////////
+	go func(linkSession1 *session.LinkSession, relay1 *relay.TurnRelay, ctx context.Context) {
 		ticker := time.NewTicker(15 * time.Second)
 		for {
 			select {
 			case <-ticker.C:
 				linkSession1.UpdateSessionInfo()
 				relay1.SetSessionHosts(linkSession1.Hosts)
-			case <-done:
+			case <-ctx.Done():
 				return
 			}
 		}
-	}(linkSession1, relay1, done)
+	}(linkSession1, relay1, ctx)
 
-	linkRelay, err := StartLinkRelay(fromLocalNet)
+	/////////////////////
+	/////////////////////
+	// SETUP multicast listening
+	/////////////////////
+	/////////////////////
+	// Use ListenConfig to bind with reuse options.
+	lc := multicast.CreateListenConfig()
+
+	// Bind one UDP socket on all interfaces (0.0.0.0) at port 20808.
+	pc, err := lc.ListenPacket(ctx, "udp4", multicast.LinkPort)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Failed to bind UDP socket: %v", err)
+	}
+	defer pc.Close()
+
+	// Wrap the connection with ipv4.PacketConn to manage multicast.
+	p, multicastIP, err := multicast.GetMulticastPacketConnection(pc, multicast.UDP4MulticastAddress)
+	if err != nil {
+		log.Fatalf("Error getting multicast connection: %s", err.Error())
 	}
 
-	// listen for message from the "outside", to this relay endpoint
-	go func(relay1 *relay.TurnRelay, done chan bool, linkRelay *LinkRelay) {
+	// Join the multicast group on all eligible interfaces.
+	multicast.JoinMulticastGroups(p, multicastIP)
+	rxChan := make(chan []byte, 1024)
+	go multicast.ListenForLinkPackets(ctx, p, multicastIP, multicast.LinkHeader, rxChan)
+	go func(ctx context.Context, rxChan chan []byte, relay1 *relay.TurnRelay) {
 		for {
 			select {
+			case linkPacket := <-rxChan:
+				fmt.Printf("LinkPacket %+v", linkPacket)
+				relay1.WriteToRelay(linkPacket)
+			case <-ctx.Done():
+				return
+			}
+		}
+	}(ctx, rxChan, relay1)
+
+	/////////////////////
+	/////////////////////
+	// listen for message from the "outside", to this relay endpoint
+	/////////////////////
+	/////////////////////
+	go func(ctx context.Context, relay1 *relay.TurnRelay) {
+		for {
+			select {
+			case <-ctx.Done():
+				return
 			case msg := <-relay1.FromRelay: // TODO(jack): could use the local variable
 				fmt.Printf("received: %s", string(msg))
-				linkRelay.SendToLocalNetwork(msg)
-			case <-done:
-				return
+				if len(msg) != 107 {
+					continue
+				}
+				_, err := link.ParseLinkPacket(msg)
+				if err != nil {
+					continue
+				}
+				multicast.SendLinkPacket(p, multicastIP, multicast.LinkHeader, msg)
 			}
 		}
-	}(relay1, done, linkRelay)
-
-	// listen for LINK messages, on UDP, and relay to other hosts in the link-session
-	go func(relay1 *relay.TurnRelay, done chan bool, linkRelay *LinkRelay) {
-		for {
-			select {
-			case msg := <-linkRelay.FromLocalNetwork: // TODO(jack): could use the local variable
-				fmt.Printf("captured: %s", string(msg))
-				relay1.WriteToRelay(msg)
-			case <-done:
-				return
-			}
-		}
-	}(relay1, done, linkRelay)
+	}(ctx, relay1)
 
 	fmt.Println("Waiting for termination signal")
-	<-done
-	fmt.Println("Exiting gracefully")
-	relay1.Shutdown()
-
+	<-ctx.Done()
 }

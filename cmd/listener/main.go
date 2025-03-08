@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"ice-client/multicast"
 	"log"
 	"os"
+	"time"
 )
 
 func main() {
@@ -30,8 +32,15 @@ func main() {
 
 	// Join the multicast group on all eligible interfaces.
 	multicast.JoinMulticastGroups(p, multicastIP)
-	go multicast.ListenForLinkPackets(p, multicastIP, multicast.LinkHeader)
+	rxChan := make(chan []byte, 1024)
+	go multicast.ListenForLinkPackets(ctx, p, multicastIP, multicast.LinkHeader, rxChan)
+	go func(rxChan chan []byte) {
+		for linkPacket := range rxChan {
+			fmt.Printf("LinkPacket %+v", linkPacket)
+		}
+	}(rxChan)
 	// TEST that we can actually SEND a link-packet
+	time.Sleep(time.Minute)
 	multicast.SendLinkPacket(p, multicastIP, multicast.LinkHeader, []byte("DERPDERPDERP"))
 	log.Print("waiting for sig-quit")
 	<-quit

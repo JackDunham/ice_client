@@ -1,6 +1,7 @@
 package multicast
 
 import (
+	"context"
 	"crypto/md5"
 	"encoding/hex"
 	"fmt"
@@ -89,57 +90,62 @@ func Min(a, b int) int {
 	return b
 }
 
-func ListenForLinkPackets(p *ipv4.PacketConn, multicastIP net.IP, linkHeader string) {
+func ListenForLinkPackets(ctx context.Context, p *ipv4.PacketConn, multicastIP net.IP, linkHeader string, rxChan chan []byte) {
 	log.Printf("Listening for Ableton Link packets on %s (bound on 0.0.0.0:20808)", UDP4MulticastAddress)
 	buf := make([]byte, MaxDatagramSize)
 	for {
-		n, cm, src, err := p.ReadFrom(buf)
-		if err != nil {
-			log.Printf("Read error: %s", err.Error())
-			continue
-		}
-		data := buf[:n]
-
-		// Optionally, check that the destination address in the control message matches the multicast group.
-		if cm != nil && !cm.Dst.Equal(multicastIP) {
-			continue
-		}
-
-		// For debugging, log the first 32 bytes.
-		log.Printf("Received packet from %v: % x", src, data[:Min(n, 32)])
-
-		// Filter for packets that begin with the expected Link header.
-		if len(data) < len(linkHeader) || string(data[:len(linkHeader)]) != linkHeader {
-			continue
-		}
-
-		// Ensure the packet is long enough.
-		if n < 64 {
-			log.Printf("Packet too short from %v", src)
-			continue
-		}
-
-		linkPacket, err := link.ParseLinkPacket(data)
-		if err != nil {
-			continue
-		}
-		fmt.Printf("%s\n", linkPacket.String())
-
-		// Compute an MD5 hash for debugging.
-		hash := md5.Sum(data)
-		encodedHash := hex.EncodeToString(hash[:])
-
-		// Determine the interface on which the packet was received.
-		ifaceName := "unknown"
-		if cm != nil && cm.IfIndex != 0 {
-			if iface, err := net.InterfaceByIndex(cm.IfIndex); err == nil {
-				ifaceName = iface.Name
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			n, cm, src, err := p.ReadFrom(buf)
+			if err != nil {
+				log.Printf("Read error: %s", err.Error())
+				continue
 			}
-		}
+			data := buf[:n]
 
-		fmt.Printf("Interface %s: Received Link packet from %v:\n", ifaceName, src)
-		fmt.Printf("  Packet size: %d bytes\n", n)
-		fmt.Printf("  MD5 hash: %s\n", encodedHash)
+			// Optionally, check that the destination address in the control message matches the multicast group.
+			if cm != nil && !cm.Dst.Equal(multicastIP) {
+				continue
+			}
+
+			// For debugging, log the first 32 bytes.
+			log.Printf("Received packet from %v: % x", src, data[:Min(n, 32)])
+
+			// Filter for packets that begin with the expected Link header.
+			if len(data) < len(linkHeader) || string(data[:len(linkHeader)]) != linkHeader {
+				continue
+			}
+
+			// Ensure the packet is long enough.
+			if n != 107 {
+				log.Printf("Packet from %v has wrong length (%d)", src, n)
+				continue
+			}
+
+			linkPacket, err := link.ParseLinkPacket(data)
+			if err != nil {
+				continue
+			}
+			fmt.Printf("%s\n", linkPacket.String())
+			rxChan <- data
+			// Compute an MD5 hash for debugging.
+			hash := md5.Sum(data)
+			encodedHash := hex.EncodeToString(hash[:])
+
+			// Determine the interface on which the packet was received.
+			ifaceName := "unknown"
+			if cm != nil && cm.IfIndex != 0 {
+				if iface, err := net.InterfaceByIndex(cm.IfIndex); err == nil {
+					ifaceName = iface.Name
+				}
+			}
+
+			fmt.Printf("Interface %s: Received Link packet from %v:\n", ifaceName, src)
+			fmt.Printf("  Packet size: %d bytes\n", n)
+			fmt.Printf("  MD5 hash: %s\n", encodedHash)
+		}
 	}
 }
 
