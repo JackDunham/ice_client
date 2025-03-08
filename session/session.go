@@ -153,13 +153,13 @@ func (ls *LinkSession) JoinOrCreateSession(sessionID, relayAddress string) (stri
 			return "", fmt.Errorf("failed unmarshaling session POST response %s: %w", string(bodyBytes), unmarshalErr)
 		}
 		sessionID = newSessionInfo.SessionID
-		fmt.Print(newSessionInfo)
+		//fmt.Print(newSessionInfo)
 	} else {
 		unmarshalErr := json.Unmarshal(bodyBytes, &sessionHosts)
 		if unmarshalErr != nil {
 			return "", fmt.Errorf("failed unmarshaling session PUT response %s: %s", string(bodyBytes), unmarshalErr)
 		}
-		fmt.Print(sessionHosts)
+		//fmt.Print(sessionHosts)
 	}
 	ls.SessionID = sessionID
 	ls.ThisHost = relayAddress
