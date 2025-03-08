@@ -41,6 +41,7 @@ func mep4InMap(mep4 string) bool {
 	return val && ok
 }
 
+// TODO(jack): deprecated -- remove
 func StartLinkRelay(fromLocalNet chan []byte) (*LinkRelay, error) {
 	ctx := context.Background()
 	killChan := make(chan bool)
@@ -71,6 +72,7 @@ func StartLinkRelay(fromLocalNet chan []byte) (*LinkRelay, error) {
 	return &LinkRelay{FromLocalNetwork: fromLocalNet, KillChan: killChan, PacketConn: p, MulticastIP: multicastIP}, nil
 }
 
+// TODO(jack): deprecated -- remove
 type LinkRelay struct {
 	FromLocalNetwork chan []byte
 	KillChan         chan bool
@@ -78,6 +80,7 @@ type LinkRelay struct {
 	MulticastIP      net.IP
 }
 
+// TODO(jack): deprecated -- remove
 func (lr *LinkRelay) SendToLocalNetwork(msg []byte) error {
 	hash := md5.Sum(msg)
 	encodedHash := hex.EncodeToString(hash[:])
@@ -90,9 +93,110 @@ func (lr *LinkRelay) SendToLocalNetwork(msg []byte) error {
 	return nil
 }
 
+// TODO(jack): deprecated -- remove
 func (lr *LinkRelay) Shutdown() error {
 	close(lr.KillChan)
 	return nil
+}
+
+type ExchangeStatus struct {
+	Session        *session.LinkSession
+	Relay          *relay.TurnRelay
+	InCount        uint64
+	OutCount       uint64
+	PingCount      uint64
+	LastInPacket   *link.LinkPacket
+	LastOutPacket  *link.LinkPacket
+	inCountMutex   sync.Mutex
+	outCountMutex  sync.Mutex
+	pingCountMutex sync.Mutex
+	lastOutMutex   sync.Mutex
+	lastInMutex    sync.Mutex
+}
+
+func (ex *ExchangeStatus) IncrInCount() {
+	ex.inCountMutex.Lock()
+	defer ex.inCountMutex.Unlock()
+	ex.InCount++
+}
+
+func (ex *ExchangeStatus) IncrOutCount() {
+	ex.outCountMutex.Lock()
+	defer ex.outCountMutex.Unlock()
+	ex.OutCount++
+}
+
+func (ex *ExchangeStatus) IncrPingCount() {
+	ex.pingCountMutex.Lock()
+	defer ex.pingCountMutex.Unlock()
+	ex.PingCount++
+}
+
+func (ex *ExchangeStatus) SetLastIn(p *link.LinkPacket) {
+	ex.lastInMutex.Lock()
+	defer ex.lastInMutex.Unlock()
+	ex.LastInPacket = p
+}
+
+func (ex *ExchangeStatus) SetLastOut(p *link.LinkPacket) {
+	ex.lastOutMutex.Lock()
+	defer ex.lastOutMutex.Unlock()
+	ex.LastOutPacket = p
+}
+
+func (ex *ExchangeStatus) GetInCount() uint64 {
+	ex.inCountMutex.Lock()
+	defer ex.inCountMutex.Unlock()
+	return ex.InCount
+}
+
+func (ex *ExchangeStatus) GetOutCount() uint64 {
+	ex.outCountMutex.Lock()
+	defer ex.outCountMutex.Unlock()
+	return ex.OutCount
+}
+
+func (ex *ExchangeStatus) GetPingCount() uint64 {
+	ex.pingCountMutex.Lock()
+	defer ex.pingCountMutex.Unlock()
+	return ex.PingCount
+}
+
+func (ex *ExchangeStatus) GetLastIn() *link.LinkPacket {
+	ex.lastInMutex.Lock()
+	defer ex.lastInMutex.Unlock()
+	return ex.LastInPacket
+}
+
+func (ex *ExchangeStatus) GetLastOut() *link.LinkPacket {
+	ex.lastOutMutex.Lock()
+	defer ex.lastOutMutex.Unlock()
+	return ex.LastOutPacket
+}
+
+func printStatus(status *ExchangeStatus) {
+	// Clear the screen once at the start.
+	fmt.Print("\033[2J")
+	// Move the cursor to the top left (row 1, col 1)
+	fmt.Print("\033[H")
+
+	fmt.Printf("SessionID: %s\n", status.Session.SessionID)
+	fmt.Printf("Session Hosts:\n")
+	for idx, host := range status.Session.GetSessionHosts() {
+		fmt.Printf("\t%d: %s\n", idx, host)
+	}
+	fmt.Printf("Public TURN Address: %s\n", status.Relay.ThisHost)
+	lastIn := status.GetLastIn()
+	if lastIn != nil {
+		fmt.Printf("Last in mpe4: %s\n", lastIn.MEP4)
+	}
+	fmt.Printf("In count: %d\n", status.GetInCount())
+	lastOut := status.GetLastOut()
+	if lastOut != nil {
+		fmt.Printf("Last out mpe4: %s\n", lastOut.MEP4)
+	}
+	fmt.Printf("Out count: %d\n", status.GetOutCount())
+	fmt.Printf("Ping count: %d\n", status.GetPingCount())
 }
 
 // Exchange Link packets between local and remote network(s)
@@ -126,7 +230,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("relay1 host: %+v", relay1.RelayConn.LocalAddr())
+	//fmt.Printf("relay1 host: %+v", relay1.RelayConn.LocalAddr())
 
 	// Join or create link session
 	linkSession1 := &session.LinkSession{}
@@ -176,39 +280,52 @@ func main() {
 		log.Fatalf("Error getting multicast connection: %s", err.Error())
 	}
 
+	exchangeStatus := &ExchangeStatus{
+		Session: linkSession1,
+		Relay:   relay1,
+	}
+
 	// Join the multicast group on all eligible interfaces.
 	multicast.JoinMulticastGroups(p, multicastIP)
 	// Listen for link-packets on local network interface(s) + retransmit to relay
 	rxChan := make(chan multicast.PacketAndMep4, 1024)
 	go multicast.ListenForLinkPackets(ctx, p, multicastIP, multicast.LinkHeader, rxChan)
-	go func(ctx context.Context, rxChan chan multicast.PacketAndMep4, relay1 *relay.TurnRelay) {
+	go func(ctx context.Context, rxChan chan multicast.PacketAndMep4, relay1 *relay.TurnRelay, exchangeStatus *ExchangeStatus) {
+		ticker := time.NewTicker(10 * time.Second)
 		for {
 			select {
+			case <-ticker.C:
+				relay1.WriteToRelay([]byte("PING"))
 			case linkPacket := <-rxChan:
-				fmt.Printf("LinkPacket %+v", linkPacket)
+				//fmt.Printf("LinkPacket %+v", linkPacket)
 				// if this packet wasn't already recorded as coming from "outside", relay it
 				if !mep4InMap(linkPacket.MEP4) {
 					relay1.WriteToRelay(linkPacket.Data)
+					exchangeStatus.IncrOutCount()
 				}
 			case <-ctx.Done():
 				return
 			}
 		}
-	}(ctx, rxChan, relay1)
+	}(ctx, rxChan, relay1, exchangeStatus)
 
 	/////////////////////
 	/////////////////////
 	// listen for messages from "outside", send to this relay endpoint
 	/////////////////////
 	/////////////////////
-	go func(ctx context.Context, relay1 *relay.TurnRelay) {
+	go func(ctx context.Context, relay1 *relay.TurnRelay, exchangeStatus *ExchangeStatus) {
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case msg := <-relay1.FromRelay: // TODO(jack): could use the local variable
-				fmt.Printf("received: %s", string(msg))
-				if len(msg) != 107 {
+				//fmt.Printf("received: %s", string(msg))
+				if string(msg) == "PING" {
+					exchangeStatus.IncrPingCount()
+					//fmt.Printf("received PING")
+					continue
+				} else if len(msg) != 107 {
 					continue
 				}
 				linkPacket, err := link.ParseLinkPacket(msg)
@@ -218,9 +335,23 @@ func main() {
 				// Note MEP4 of packets from "outside"
 				addToMep4Map(linkPacket.MEP4)
 				multicast.SendLinkPacket(p, multicastIP, multicast.LinkHeader, msg)
+				exchangeStatus.SetLastIn(linkPacket)
+				exchangeStatus.IncrInCount()
 			}
 		}
-	}(ctx, relay1)
+	}(ctx, relay1, exchangeStatus)
+
+	go func(ctx context.Context, exchangeStatus *ExchangeStatus) {
+		ticker := time.NewTicker(1 * time.Second)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				printStatus(exchangeStatus)
+			}
+		}
+	}(ctx, exchangeStatus)
 
 	fmt.Println("Waiting for termination signal")
 	<-ctx.Done()
