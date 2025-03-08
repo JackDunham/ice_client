@@ -90,7 +90,12 @@ func Min(a, b int) int {
 	return b
 }
 
-func ListenForLinkPackets(ctx context.Context, p *ipv4.PacketConn, multicastIP net.IP, linkHeader string, rxChan chan []byte) {
+type PacketAndMep4 struct {
+	Data []byte
+	MEP4 string
+}
+
+func ListenForLinkPackets(ctx context.Context, p *ipv4.PacketConn, multicastIP net.IP, linkHeader string, rxChan chan PacketAndMep4) {
 	log.Printf("Listening for Ableton Link packets on %s (bound on 0.0.0.0:20808)", UDP4MulticastAddress)
 	buf := make([]byte, MaxDatagramSize)
 	for {
@@ -129,7 +134,7 @@ func ListenForLinkPackets(ctx context.Context, p *ipv4.PacketConn, multicastIP n
 				continue
 			}
 			fmt.Printf("%s\n", linkPacket.String())
-			rxChan <- data
+			rxChan <- PacketAndMep4{Data: data, MEP4: linkPacket.MEP4}
 			// Compute an MD5 hash for debugging.
 			hash := md5.Sum(data)
 			encodedHash := hex.EncodeToString(hash[:])

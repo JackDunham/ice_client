@@ -32,9 +32,9 @@ func main() {
 
 	// Join the multicast group on all eligible interfaces.
 	multicast.JoinMulticastGroups(p, multicastIP)
-	rxChan := make(chan []byte, 1024)
+	rxChan := make(chan multicast.PacketAndMep4, 1024)
 	go multicast.ListenForLinkPackets(ctx, p, multicastIP, multicast.LinkHeader, rxChan)
-	go func(rxChan chan []byte) {
+	go func(rxChan chan multicast.PacketAndMep4) {
 		for linkPacket := range rxChan {
 			fmt.Printf("LinkPacket %+v", linkPacket)
 		}

@@ -79,6 +79,7 @@ type LinkPacket struct {
 	Header    LinkPacketHeader
 	TLVs      []*TLV
 	SessionID uint32 // Extracted from the "sess" TLV, if present.
+	MEP4      string
 }
 
 func (lp *LinkPacket) String() string {
@@ -161,6 +162,9 @@ func ParseLinkPacket(data []byte) (*LinkPacket, error) {
 
 		tlv := TLV{Key: key, Length: tlvLength, Value: value}
 		packet.TLVs = append(packet.TLVs, &tlv)
+		if key == "mep4" {
+			packet.MEP4 = fmt.Sprintf("%x", value)
+		}
 	}
 
 	return packet, nil

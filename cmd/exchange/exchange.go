@@ -14,11 +14,32 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
 	"golang.org/x/net/ipv4"
 )
+
+var (
+	mep4MapMutex sync.Mutex
+	mep4Map      = map[string]bool{}
+)
+
+func addToMep4Map(mep4 string) {
+	mep4MapMutex.Lock()
+	defer mep4MapMutex.Unlock()
+
+	mep4Map[mep4] = true
+}
+
+func mep4InMap(mep4 string) bool {
+	mep4MapMutex.Lock()
+	defer mep4MapMutex.Unlock()
+
+	val, ok := mep4Map[mep4]
+	return val && ok
+}
 
 func StartLinkRelay(fromLocalNet chan []byte) (*LinkRelay, error) {
 	ctx := context.Background()
@@ -157,14 +178,18 @@ func main() {
 
 	// Join the multicast group on all eligible interfaces.
 	multicast.JoinMulticastGroups(p, multicastIP)
-	rxChan := make(chan []byte, 1024)
+	// Listen for link-packets on local network interface(s) + retransmit to relay
+	rxChan := make(chan multicast.PacketAndMep4, 1024)
 	go multicast.ListenForLinkPackets(ctx, p, multicastIP, multicast.LinkHeader, rxChan)
-	go func(ctx context.Context, rxChan chan []byte, relay1 *relay.TurnRelay) {
+	go func(ctx context.Context, rxChan chan multicast.PacketAndMep4, relay1 *relay.TurnRelay) {
 		for {
 			select {
 			case linkPacket := <-rxChan:
 				fmt.Printf("LinkPacket %+v", linkPacket)
-				relay1.WriteToRelay(linkPacket)
+				// if this packet wasn't already recorded as coming from "outside", relay it
+				if !mep4InMap(linkPacket.MEP4) {
+					relay1.WriteToRelay(linkPacket.Data)
+				}
 			case <-ctx.Done():
 				return
 			}
@@ -173,7 +198,7 @@ func main() {
 
 	/////////////////////
 	/////////////////////
-	// listen for message from the "outside", to this relay endpoint
+	// listen for messages from "outside", send to this relay endpoint
 	/////////////////////
 	/////////////////////
 	go func(ctx context.Context, relay1 *relay.TurnRelay) {
@@ -186,10 +211,12 @@ func main() {
 				if len(msg) != 107 {
 					continue
 				}
-				_, err := link.ParseLinkPacket(msg)
+				linkPacket, err := link.ParseLinkPacket(msg)
 				if err != nil {
 					continue
 				}
+				// Note MEP4 of packets from "outside"
+				addToMep4Map(linkPacket.MEP4)
 				multicast.SendLinkPacket(p, multicastIP, multicast.LinkHeader, msg)
 			}
 		}
