@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -315,14 +316,11 @@ func (turnRelay *TurnRelay) ReadFromRelay(ctx context.Context) error {
 */
 func (turnRelay *TurnRelay) WriteToRelay(msg []byte) error {
 	for _, netAddr := range turnRelay.SessionHosts {
-		fmt.Printf("Write bytes to Host Addr: +%v", netAddr)
+		//fmt.Printf("Write bytes to Host Addr: +%v", netAddr)
 		n, err := turnRelay.UdpConn.WriteTo(msg, netAddr)
 		if err != nil {
-			fmt.Printf("Error writing bytes to Host Addr +%v: %s", netAddr, err.Error())
-		} else {
-			fmt.Printf("wrote %d bytes to %+v", n, netAddr)
+			fmt.Fprintf(os.Stderr, "Error writing %d bytes to Host Addr +%v: %s", n, netAddr, err.Error())
 		}
-
 	}
 	return nil
 }

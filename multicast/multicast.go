@@ -2,12 +2,11 @@ package multicast
 
 import (
 	"context"
-	"crypto/md5"
-	"encoding/hex"
 	"fmt"
 	"ice-client/link"
 	"log"
 	"net"
+	"os"
 	"strings"
 	"syscall"
 
@@ -53,9 +52,10 @@ func JoinMulticastGroups(p *ipv4.PacketConn, groupIP net.IP) {
 		// Attempt to join the multicast group on this interface.
 		group := &net.UDPAddr{IP: groupIP}
 		if err := p.JoinGroup(&iface, group); err != nil {
-			log.Printf("Interface %s: failed to join multicast group %s: %v", iface.Name, groupIP, err)
+			fmt.Fprintf(os.Stderr, "Interface %s: failed to join multicast group %s: %v", iface.Name, groupIP, err)
+			//log.Printf("Interface %s: failed to join multicast group %s: %v", iface.Name, groupIP, err)
 		} else {
-			log.Printf("Interface %s: successfully joined multicast group %s", iface.Name, groupIP)
+			//log.Printf("Interface %s: successfully joined multicast group %s", iface.Name, groupIP)
 		}
 	}
 }
@@ -91,12 +91,13 @@ func Min(a, b int) int {
 }
 
 type PacketAndMep4 struct {
-	Data []byte
-	MEP4 string
+	Data  []byte
+	MEP4  string
+	Iface string
 }
 
 func ListenForLinkPackets(ctx context.Context, p *ipv4.PacketConn, multicastIP net.IP, linkHeader string, rxChan chan PacketAndMep4) {
-	log.Printf("Listening for Ableton Link packets on %s (bound on 0.0.0.0:20808)", UDP4MulticastAddress)
+	//log.Printf("Listening for Ableton Link packets on %s (bound on 0.0.0.0:20808)", UDP4MulticastAddress)
 	buf := make([]byte, MaxDatagramSize)
 	for {
 		select {
@@ -105,7 +106,7 @@ func ListenForLinkPackets(ctx context.Context, p *ipv4.PacketConn, multicastIP n
 		default:
 			n, cm, src, err := p.ReadFrom(buf)
 			if err != nil {
-				log.Printf("Read error: %s", err.Error())
+				fmt.Fprintf(os.Stderr, "Read error (src=%+v): %s", src, err.Error())
 				continue
 			}
 			data := buf[:n]
@@ -116,7 +117,7 @@ func ListenForLinkPackets(ctx context.Context, p *ipv4.PacketConn, multicastIP n
 			}
 
 			// For debugging, log the first 32 bytes.
-			log.Printf("Received packet from %v: % x", src, data[:Min(n, 32)])
+			//log.Printf("Received packet from %v: % x", src, data[:Min(n, 32)])
 
 			// Filter for packets that begin with the expected Link header.
 			if len(data) < len(linkHeader) || string(data[:len(linkHeader)]) != linkHeader {
@@ -125,7 +126,7 @@ func ListenForLinkPackets(ctx context.Context, p *ipv4.PacketConn, multicastIP n
 
 			// Ensure the packet is long enough.
 			if n != 107 {
-				log.Printf("Packet from %v has wrong length (%d)", src, n)
+				//log.Printf("Packet from %v has wrong length (%d)", src, n)
 				continue
 			}
 
@@ -133,11 +134,10 @@ func ListenForLinkPackets(ctx context.Context, p *ipv4.PacketConn, multicastIP n
 			if err != nil {
 				continue
 			}
-			fmt.Printf("%s\n", linkPacket.String())
-			rxChan <- PacketAndMep4{Data: data, MEP4: linkPacket.MEP4}
+			//fmt.Printf("%s\n", linkPacket.String())
 			// Compute an MD5 hash for debugging.
-			hash := md5.Sum(data)
-			encodedHash := hex.EncodeToString(hash[:])
+			//hash := md5.Sum(data)
+			//encodedHash := hex.EncodeToString(hash[:])
 
 			// Determine the interface on which the packet was received.
 			ifaceName := "unknown"
@@ -146,16 +146,18 @@ func ListenForLinkPackets(ctx context.Context, p *ipv4.PacketConn, multicastIP n
 					ifaceName = iface.Name
 				}
 			}
+			rxChan <- PacketAndMep4{Data: data, MEP4: linkPacket.MEP4, Iface: ifaceName}
 
-			fmt.Printf("Interface %s: Received Link packet from %v:\n", ifaceName, src)
-			fmt.Printf("  Packet size: %d bytes\n", n)
-			fmt.Printf("  MD5 hash: %s\n", encodedHash)
+			//fmt.Printf("Interface %s: Received Link packet from %v:\n", ifaceName, src)
+			//fmt.Printf("  Packet size: %d bytes\n", n)
+			//fmt.Printf("  MD5 hash: %s\n", encodedHash)
 		}
 	}
 }
 
+// TODO(jack): deprecated -- remove
 func ListenForLinkPacketsUsingChannels(p *ipv4.PacketConn, multicastIP net.IP, linkHeader string, rxChan chan []byte, killChan chan bool) {
-	log.Printf("Listening for Ableton Link packets on %s (bound on 0.0.0.0:20808)", UDP4MulticastAddress)
+	//log.Printf("Listening for Ableton Link packets on %s (bound on 0.0.0.0:20808)", UDP4MulticastAddress)
 	buf := make([]byte, MaxDatagramSize)
 	for {
 		select {
@@ -164,7 +166,7 @@ func ListenForLinkPacketsUsingChannels(p *ipv4.PacketConn, multicastIP net.IP, l
 		default:
 			n, cm, src, err := p.ReadFrom(buf)
 			if err != nil {
-				log.Printf("Read error: %s", err.Error())
+				//log.Printf("Read error: %s", err.Error())
 				continue
 			}
 			data := buf[:n]
