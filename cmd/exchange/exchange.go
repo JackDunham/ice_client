@@ -239,7 +239,6 @@ func main() {
 	} else {
 		linkSession1.JoinOrCreateSession(*sessionID, relay1.ThisHost)
 	}
-	linkSession1.JoinOrCreateSession("", relay1.ThisHost)
 
 	/////////////////////
 	/////////////////////
@@ -252,7 +251,14 @@ func main() {
 			select {
 			case <-ticker.C:
 				linkSession1.UpdateSessionInfo()
-				relay1.SetSessionHosts(linkSession1.Hosts)
+				hosts := []string{}
+				for _, host := range linkSession1.Hosts {
+					if host == relay1.ThisHost {
+						continue
+					}
+					hosts = append(hosts, host)
+				}
+				relay1.SetSessionHosts(hosts)
 			case <-ctx.Done():
 				return
 			}

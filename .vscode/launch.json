@@ -46,7 +46,7 @@
             "request": "launch",
             "mode": "debug",
             "program": "${workspaceFolder}/cmd/exchange/exchange.go",
-            "args": ["d0e31176-6fb3-489d-955b-f9dd0b0b9bd4"]
+            "args": ["--session", "30c97d55-18b2-452d-a98b-d37c25d9f549"]
         }                
     ]
 }
