@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/md5"
-	"encoding/hex"
 	"flag"
 	"fmt"
 	"ice-client/link"
@@ -11,14 +9,11 @@ import (
 	"ice-client/relay"
 	"ice-client/session"
 	"log"
-	"net"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 	"time"
-
-	"golang.org/x/net/ipv4"
 )
 
 var (
@@ -39,64 +34,6 @@ func mep4InMap(mep4 string) bool {
 
 	val, ok := mep4Map[mep4]
 	return val && ok
-}
-
-// TODO(jack): deprecated -- remove
-func StartLinkRelay(fromLocalNet chan []byte) (*LinkRelay, error) {
-	ctx := context.Background()
-	killChan := make(chan bool)
-	// Use ListenConfig to bind with reuse options.
-	lc := multicast.CreateListenConfig()
-
-	// Bind one UDP socket on all interfaces (0.0.0.0) at port 20808.
-	pc, err := lc.ListenPacket(ctx, "udp4", multicast.LinkPort)
-	if err != nil {
-		log.Fatalf("Failed to bind UDP socket: %v", err)
-	}
-	defer pc.Close()
-
-	// Wrap the connection with ipv4.PacketConn to manage multicast.
-	p, multicastIP, err := multicast.GetMulticastPacketConnection(pc, multicast.UDP4MulticastAddress)
-	if err != nil {
-		log.Fatalf("Error getting multicast connection: %s", err.Error())
-	}
-
-	// Join the multicast group on all eligible interfaces.
-	multicast.JoinMulticastGroups(p, multicastIP)
-	// TODO(jack):
-	go multicast.ListenForLinkPacketsUsingChannels(p, multicastIP, multicast.LinkHeader, fromLocalNet, killChan)
-
-	//  TEST that we can actually SEND a link-packet
-	//multicast.SendLinkPacket(p, multicastIP, multicast.LinkHeader, []byte("DERPDERPDERP"))
-
-	return &LinkRelay{FromLocalNetwork: fromLocalNet, KillChan: killChan, PacketConn: p, MulticastIP: multicastIP}, nil
-}
-
-// TODO(jack): deprecated -- remove
-type LinkRelay struct {
-	FromLocalNetwork chan []byte
-	KillChan         chan bool
-	PacketConn       *ipv4.PacketConn
-	MulticastIP      net.IP
-}
-
-// TODO(jack): deprecated -- remove
-func (lr *LinkRelay) SendToLocalNetwork(msg []byte) error {
-	hash := md5.Sum(msg)
-	encodedHash := hex.EncodeToString(hash[:])
-	fmt.Print(encodedHash)
-
-	err := multicast.SendLinkPacket(lr.PacketConn, lr.MulticastIP, multicast.LinkHeader, msg)
-	if err != nil {
-		return fmt.Errorf("error sending link packet: %w", err)
-	}
-	return nil
-}
-
-// TODO(jack): deprecated -- remove
-func (lr *LinkRelay) Shutdown() error {
-	close(lr.KillChan)
-	return nil
 }
 
 type ExchangeStatus struct {
@@ -340,7 +277,7 @@ func main() {
 				}
 				// Note MEP4 of packets from "outside"
 				addToMep4Map(linkPacket.MEP4)
-				multicast.SendLinkPacket(p, multicastIP, multicast.LinkHeader, msg)
+				multicast.SendLinkPacket(p, multicastIP, msg)
 				exchangeStatus.SetLastIn(linkPacket)
 				exchangeStatus.IncrInCount()
 			}

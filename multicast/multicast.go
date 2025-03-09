@@ -238,26 +238,22 @@ func GetMulticastPacketConnection(pc net.PacketConn, linkMulticastAddress string
 	return p, multicastIP, nil
 }
 
-// SendLinkPacket constructs and sends an Ableton Link packet.
-// It prepends the provided linkHeader (e.g. "_asdp_v") to the extraData,
-// then sends the resulting packet to the multicast group.
-func SendLinkPacket(p *ipv4.PacketConn, multicastIP net.IP, linkHeader string, extraData []byte) error {
-	// Construct the complete packet: link header followed by extra data.
-	packet := append([]byte(linkHeader), extraData...)
-
+// SendLinkPacket sends a valid link-packet packet to the multicast group.
+func SendLinkPacket(p *ipv4.PacketConn, multicastIP net.IP, linkMsg []byte) error {
 	// Resolve the destination address using the multicast address constant.
+	// TODO(jack): pre-resolve this and move this out of the (enclosing) hot loop
 	destAddr, err := net.ResolveUDPAddr("udp4", UDP4MulticastAddress)
 	if err != nil {
 		return fmt.Errorf("failed to resolve multicast address: %v", err)
 	}
 
 	// Use nil for the ControlMessage.
-	n, err := p.WriteTo(packet, nil, destAddr)
+	n, err := p.WriteTo(linkMsg, nil, destAddr)
 	if err != nil {
 		return fmt.Errorf("failed to send packet: %v", err)
 	}
-	if n != len(packet) {
-		return fmt.Errorf("sent %d bytes, expected %d", n, len(packet))
+	if n != len(linkMsg) {
+		return fmt.Errorf("sent %d bytes, expected %d", n, len(linkMsg))
 	}
 	return nil
 }

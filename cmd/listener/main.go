@@ -41,7 +41,7 @@ func main() {
 	}(rxChan)
 	// TEST that we can actually SEND a link-packet
 	time.Sleep(time.Minute)
-	multicast.SendLinkPacket(p, multicastIP, multicast.LinkHeader, []byte("DERPDERPDERP"))
+	multicast.SendLinkPacket(p, multicastIP, []byte("DERPDERPDERP"))
 	log.Print("waiting for sig-quit")
 	<-quit
 	log.Print("quitting")
