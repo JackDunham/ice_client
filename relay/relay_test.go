@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"context"
 	"fmt"
 	"ice-client/session"
 	"testing"
@@ -11,14 +12,16 @@ import (
 func TestRelay(t *testing.T) {
 	fromChan := make(chan []byte, 1024)
 	toChan := make(chan []byte, 1024)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	relay1, err := StartTurnClient(fromChan)
+	relay1, err := StartTurnClient(fromChan, ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	fmt.Printf("relay1 host: %+v", relay1.RelayConn.LocalAddr())
 
-	relay2, err := StartTurnClient(toChan)
+	relay2, err := StartTurnClient(toChan, ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
