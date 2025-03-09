@@ -16,24 +16,36 @@ import (
 	"time"
 )
 
-var (
-	mep4MapMutex sync.Mutex
-	mep4Map      = map[string]bool{}
+type PacketSource string
+
+const (
+	LocalNetwork  PacketSource = "local"
+	RemoteNetwork PacketSource = "remote"
 )
 
-func addToMep4Map(mep4 string) {
-	mep4MapMutex.Lock()
-	defer mep4MapMutex.Unlock()
+var (
+	mep4MapMutex sync.Mutex
+	mep4Map      = map[string]PacketSource{}
+)
 
-	mep4Map[mep4] = true
-}
-
-func mep4InMap(mep4 string) bool {
+func GetFromMepMap(mep4 string) (PacketSource, bool) {
 	mep4MapMutex.Lock()
 	defer mep4MapMutex.Unlock()
 
 	val, ok := mep4Map[mep4]
-	return val && ok
+	return val, ok
+}
+
+func AddToMepMap(mep4 string, packetSource PacketSource) error {
+	mep4MapMutex.Lock()
+	defer mep4MapMutex.Unlock()
+
+	_, ok := mep4Map[mep4]
+	if ok {
+		return fmt.Errorf("key %s: already set", mep4)
+	}
+	mep4Map[mep4] = packetSource
+	return nil
 }
 
 type ExchangeStatus struct {
@@ -241,11 +253,17 @@ func main() {
 				relay1.WriteToRelay([]byte("PING"))
 			case linkPacket := <-rxChan:
 				//fmt.Printf("LinkPacket %+v", linkPacket)
-				// if this packet wasn't already recorded as coming from "outside", relay it
-				if !mep4InMap(linkPacket.MEP4) {
-					relay1.WriteToRelay(linkPacket.Data)
-					exchangeStatus.IncrOutCount()
+				// if this packet was already recorded as coming from "outside", don't relay it
+				val, ok := GetFromMepMap(linkPacket.MEP4)
+				if val == RemoteNetwork {
+					continue
 				}
+				if !ok {
+					// first time we've seen this packet-source. Record it.
+					AddToMepMap(linkPacket.MEP4, LocalNetwork)
+				}
+				relay1.WriteToRelay(linkPacket.Data)
+				exchangeStatus.IncrOutCount()
 			case <-ctx.Done():
 				return
 			}
@@ -275,8 +293,15 @@ func main() {
 				if err != nil {
 					continue
 				}
-				// Note MEP4 of packets from "outside"
-				addToMep4Map(linkPacket.MEP4)
+				// if we've already seen this source in the local network, skip it.
+				val, ok := GetFromMepMap(linkPacket.MEP4)
+				if val == LocalNetwork {
+					continue
+				} else if !ok {
+					// first time we've seen this packet-source. Record it.
+					AddToMepMap(linkPacket.MEP4, RemoteNetwork)
+				}
+
 				multicast.SendLinkPacket(p, multicastIP, msg)
 				exchangeStatus.SetLastIn(linkPacket)
 				exchangeStatus.IncrInCount()
