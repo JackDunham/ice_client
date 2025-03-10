@@ -188,7 +188,7 @@ func main() {
 	} else {
 		linkSession1.JoinOrCreateSession(*sessionID, relay1.ThisHost)
 	}
-
+	os.WriteFile("current_session_id", []byte(linkSession1.SessionID+"\n"), 0o644)
 	/////////////////////
 	/////////////////////
 	// Keep the link session + relay updated
