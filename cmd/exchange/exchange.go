@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -129,23 +130,27 @@ func printStatus(status *ExchangeStatus) {
 	// Move the cursor to the top left (row 1, col 1)
 	fmt.Print("\033[H")
 
-	fmt.Printf("SessionID: %s\n", status.Session.SessionID)
-	fmt.Printf("Session Hosts:\n")
+	var statusBuilder strings.Builder
+	statusBuilder.WriteString(fmt.Sprintf("SessionID: %s\n", status.Session.SessionID))
+	statusBuilder.WriteString("Session Hosts:\n")
 	for idx, host := range status.Session.GetSessionHosts() {
-		fmt.Printf("\t%d: %s\n", idx, host)
+		statusBuilder.WriteString(fmt.Sprintf("\t%d: %s\n", idx, host))
 	}
-	fmt.Printf("Public TURN Address: %s\n", status.Relay.ThisHost)
+	statusBuilder.WriteString(fmt.Sprintf("Public TURN Address: %s\n", status.Relay.ThisHost))
 	lastIn := status.GetLastIn()
 	if lastIn != nil {
-		fmt.Printf("Last in mpe4: %s\n", lastIn.MEP4)
+		statusBuilder.WriteString(fmt.Sprintf("Last in mpe4: %s\n", lastIn.MEP4))
 	}
-	fmt.Printf("In count: %d\n", status.GetInCount())
+	statusBuilder.WriteString(fmt.Sprintf("In count: %d\n", status.GetInCount()))
 	lastOut := status.GetLastOut()
 	if lastOut != nil {
-		fmt.Printf("Last out mpe4: %s\n", lastOut.MEP4)
+		statusBuilder.WriteString(fmt.Sprintf("Last out mpe4: %s\n", lastOut.MEP4))
 	}
-	fmt.Printf("Out count: %d\n", status.GetOutCount())
-	fmt.Printf("Ping count: %d\n", status.GetPingCount())
+	statusBuilder.WriteString(fmt.Sprintf("Out count: %d\n", status.GetOutCount()))
+	statusBuilder.WriteString(fmt.Sprintf("Ping count: %d\n", status.GetPingCount()))
+	statusStr := statusBuilder.String()
+	os.WriteFile("status", []byte(statusStr), 0o644)
+	fmt.Print(statusStr)
 }
 
 // Exchange Link packets between local and remote network(s)
