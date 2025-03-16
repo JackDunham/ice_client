@@ -306,7 +306,11 @@ func main() {
 					// first time we've seen this packet-source. Record it.
 					AddToMepMap(linkPacket.MEP4, RemoteNetwork)
 				}
-
+				// change source IP to be localhost, in case there's a subnet mismatch w/ local-network
+				msg[101] = 127
+				msg[102] = 0
+				msg[103] = 0
+				msg[104] = 1
 				multicast.SendLinkPacket(p, multicastIP, msg)
 				exchangeStatus.SetLastIn(linkPacket)
 				exchangeStatus.IncrInCount()
