@@ -1,6 +1,6 @@
 # macOS
 .DS_Store
-.BAK
+**.BAK
 
 # Go
 *.exe
