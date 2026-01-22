@@ -1,6 +1,8 @@
 module ice-client
 
-go 1.22.1
+go 1.23.0
+
+toolchain go1.24.12
 
 require (
 	github.com/google/uuid v1.3.1
@@ -9,6 +11,7 @@ require (
 	github.com/pion/stun v0.6.1
 	github.com/pion/turn/v4 v4.0.0
 	golang.org/x/net v0.27.0
+	essaim.dev/al v0.0.0-20241030130601-1747e11869fd
 )
 
 require (

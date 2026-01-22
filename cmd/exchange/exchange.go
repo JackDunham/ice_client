@@ -9,6 +9,7 @@ import (
 	"ice-client/relay"
 	"ice-client/session"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"strings"
@@ -194,6 +195,22 @@ func main() {
 		linkSession1.JoinOrCreateSession(*sessionID, relay1.ThisHost)
 	}
 	os.WriteFile("current_session_id", []byte(linkSession1.SessionID+"\n"), 0o644)
+
+	// IMMEDIATELY initialize relay with current session hosts (don't wait for ticker)
+	{
+		hosts := []string{}
+		for _, host := range linkSession1.GetSessionHosts() {
+			if host == relay1.ThisHost {
+				continue
+			}
+			hosts = append(hosts, host)
+		}
+		if len(hosts) > 0 {
+			log.Printf("Immediately setting %d session hosts", len(hosts))
+			relay1.SetSessionHosts(hosts)
+		}
+	}
+
 	/////////////////////
 	/////////////////////
 	// Keep the link session + relay updated
@@ -206,7 +223,7 @@ func main() {
 			case <-ticker.C:
 				linkSession1.UpdateSessionInfo()
 				hosts := []string{}
-				for _, host := range linkSession1.Hosts {
+				for _, host := range linkSession1.GetSessionHosts() {
 					if host == relay1.ThisHost {
 						continue
 					}
@@ -285,33 +302,53 @@ func main() {
 			select {
 			case <-ctx.Done():
 				return
-			case msg := <-relay1.FromRelay: // TODO(jack): could use the local variable
-				//fmt.Printf("received: %s", string(msg))
+			case msg := <-relay1.FromRelay:
+				// Handle PING keepalive messages
 				if string(msg) == "PING" {
 					exchangeStatus.IncrPingCount()
-					//fmt.Printf("received PING")
-					continue
-				} else if len(msg) != 107 {
 					continue
 				}
+
+				// Validate it's a Link packet (minimum header size)
+				if !link.IsValidLinkPacket(msg) {
+					continue
+				}
+
 				linkPacket, err := link.ParseLinkPacket(msg)
 				if err != nil {
+					fmt.Fprintf(os.Stderr, "Failed to parse incoming relay packet: %s\n", err.Error())
 					continue
 				}
-				// if we've already seen this source in the local network, skip it.
-				val, ok := GetFromMepMap(linkPacket.MEP4)
+
+				// Skip disconnect packets - they have no MEP4
+				if linkPacket.IsDisconnect {
+					continue
+				}
+
+				// Need MEP4 for deduplication
+				if linkPacket.MEP4Hex == "" {
+					continue
+				}
+
+				// If we've already seen this source in the local network, skip it.
+				val, ok := GetFromMepMap(linkPacket.MEP4Hex)
 				if val == LocalNetwork {
 					continue
 				} else if !ok {
-					// first time we've seen this packet-source. Record it.
-					AddToMepMap(linkPacket.MEP4, RemoteNetwork)
+					// First time we've seen this packet-source. Record it.
+					AddToMepMap(linkPacket.MEP4Hex, RemoteNetwork)
 				}
-				// change source IP to be localhost, in case there's a subnet mismatch w/ local-network
-				msg[101] = 127
-				msg[102] = 0
-				msg[103] = 0
-				msg[104] = 1
-				multicast.SendLinkPacket(p, multicastIP, msg)
+
+				// Rewrite source IP to localhost to avoid subnet mismatch with local network.
+				// Use the proper RewriteMEP4IP function instead of hardcoded byte offsets.
+				rewrittenMsg, err := link.RewriteMEP4IP(msg, net.IPv4(127, 0, 0, 1))
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Failed to rewrite MEP4 IP: %s\n", err.Error())
+					// Fall back to sending original packet
+					rewrittenMsg = msg
+				}
+
+				multicast.SendLinkPacket(p, multicastIP, rewrittenMsg)
 				exchangeStatus.SetLastIn(linkPacket)
 				exchangeStatus.IncrInCount()
 			}

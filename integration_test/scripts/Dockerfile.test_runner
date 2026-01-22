@@ -1,0 +1,16 @@
+FROM docker:24-cli
+
+RUN apk add --no-cache \
+    bash \
+    curl \
+    jq \
+    netcat-openbsd
+
+# docker compose v2 is already included in docker:24-cli as a plugin
+
+WORKDIR /scripts
+
+COPY run_tests.sh /scripts/
+RUN chmod +x /scripts/run_tests.sh
+
+ENTRYPOINT ["bash", "/scripts/run_tests.sh"]

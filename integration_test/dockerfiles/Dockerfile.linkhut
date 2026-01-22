@@ -1,0 +1,51 @@
+# Build link-hut from Ableton Link repository
+FROM ubuntu:22.04 AS builder
+
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    git \
+    libasound2-dev \
+    portaudio19-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+
+# Clone Ableton Link
+RUN git clone --recursive https://github.com/Ableton/link.git
+
+WORKDIR /src/link
+
+# Build link-hut (command-line Link test tool)
+RUN mkdir build && cd build && \
+    cmake -DLINK_BUILD_ASIO=ON .. && \
+    cmake --build . --target LinkHut
+
+# Runtime stage
+FROM ubuntu:22.04
+
+RUN apt-get update && apt-get install -y \
+    libasound2 \
+    libportaudio2 \
+    iproute2 \
+    iputils-ping \
+    net-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /src/link/build/bin/LinkHut /usr/local/bin/linkhut
+
+# Create a wrapper script that runs linkhut with proper settings
+COPY <<'EOF' /usr/local/bin/linkhut-wrapper.sh
+#!/bin/bash
+set -e
+
+# Enable Link
+echo "Starting LinkHut..."
+echo "Press 'q' to quit, 'space' to toggle play, up/down for tempo"
+
+exec /usr/local/bin/linkhut "$@"
+EOF
+
+RUN chmod +x /usr/local/bin/linkhut-wrapper.sh
+
+ENTRYPOINT ["/usr/local/bin/linkhut-wrapper.sh"]

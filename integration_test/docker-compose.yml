@@ -1,0 +1,179 @@
+# Integration test for Link-over-WAN
+#
+# Network topology:
+# - host_a_net: Isolated network for Host A (link_a + exchange_a)
+# - host_b_net: Isolated network for Host B (link_b + exchange_b)
+# - turn_net: Shared network for TURN server and session server
+#
+# exchange_a and exchange_b connect to both their local net AND turn_net
+# This allows local Link multicast + WAN relay through TURN
+
+networks:
+  host_a_net:
+    driver: bridge
+    internal: false  # Allow internet for building, but hosts can't route to each other
+    ipam:
+      config:
+        - subnet: 172.28.1.0/24
+  host_b_net:
+    driver: bridge
+    internal: false
+    ipam:
+      config:
+        - subnet: 172.28.2.0/24
+  turn_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
+
+services:
+  #############################################
+  # Infrastructure services
+  #############################################
+  
+  turn_server:
+    image: coturn/coturn:latest
+    container_name: turn_server
+    networks:
+      turn_net:
+        ipv4_address: 172.28.0.10
+    command:
+      - "-n"
+      - "--log-file=stdout"
+      - "--lt-cred-mech"
+      - "--user=testuser:testpassword"
+      - "--realm=test.local"
+      - "--listening-port=3478"
+      - "--min-port=49152"
+      - "--max-port=65535"
+      - "--fingerprint"
+      - "--no-tls"
+      - "--no-dtls"
+      - "--allow-loopback-peers"
+      - "--no-cli"
+      - "--external-ip=172.28.0.10"
+    healthcheck:
+      test: ["CMD", "turnadmin", "-l", "-p", "3478"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  session_server:
+    build:
+      context: ..
+      dockerfile: integration_test/dockerfiles/Dockerfile.session_server
+    container_name: session_server
+    networks:
+      turn_net:
+        ipv4_address: 172.28.0.11
+    ports:
+      - "8082:8082"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8082/"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  #############################################
+  # Host A - Link client + Exchange bridge
+  #############################################
+
+  link_a:
+    build:
+      context: ./dockerfiles
+      dockerfile: Dockerfile.linkhut
+    container_name: link_a
+    networks:
+      - host_a_net
+    stdin_open: true
+    tty: true
+    # LinkHut needs multicast support
+    sysctls:
+      - net.ipv4.igmp_max_memberships=100
+
+  exchange_a:
+    build:
+      context: ..
+      dockerfile: integration_test/dockerfiles/Dockerfile.exchange
+    container_name: exchange_a
+    networks:
+      host_a_net:
+        ipv4_address: 172.28.1.10
+      turn_net:
+        ipv4_address: 172.28.0.20
+    environment:
+      - TURN_SERVER=172.28.0.10:3478
+      - TURN_USER=testuser
+      - TURN_PASSWORD=testpassword
+      - SESSION_SERVER=http://172.28.0.11:8082
+    # Don't start automatically - test script will start it
+    profiles:
+      - exchange
+    depends_on:
+      turn_server:
+        condition: service_healthy
+      session_server:
+        condition: service_healthy
+
+  #############################################
+  # Host B - Link client + Exchange bridge
+  #############################################
+
+  link_b:
+    build:
+      context: ./dockerfiles
+      dockerfile: Dockerfile.linkhut
+    container_name: link_b
+    networks:
+      - host_b_net
+    stdin_open: true
+    tty: true
+    sysctls:
+      - net.ipv4.igmp_max_memberships=100
+
+  exchange_b:
+    build:
+      context: ..
+      dockerfile: integration_test/dockerfiles/Dockerfile.exchange
+    container_name: exchange_b
+    networks:
+      host_b_net:
+        ipv4_address: 172.28.2.10
+      turn_net:
+        ipv4_address: 172.28.0.21
+    environment:
+      - TURN_SERVER=172.28.0.10:3478
+      - TURN_USER=testuser
+      - TURN_PASSWORD=testpassword
+      - SESSION_SERVER=http://172.28.0.11:8082
+    # Don't start automatically - test script will start it
+    profiles:
+      - exchange
+    depends_on:
+      turn_server:
+        condition: service_healthy
+      session_server:
+        condition: service_healthy
+
+  #############################################
+  # Test runner (optional - for automated tests)
+  #############################################
+
+  test_runner:
+    build:
+      context: ./scripts
+      dockerfile: Dockerfile.test_runner
+    container_name: test_runner
+    networks:
+      - turn_net
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./scripts:/scripts:ro
+    environment:
+      - COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-ice_client_test}
+    depends_on:
+      - session_server
+      - turn_server
+    profiles:
+      - test

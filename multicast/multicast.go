@@ -124,9 +124,13 @@ func ListenForLinkPackets(ctx context.Context, p *ipv4.PacketConn, multicastIP n
 				continue
 			}
 
-			// Ensure the packet is long enough.
-			if n != 107 {
-				//log.Printf("Packet from %v has wrong length (%d)", src, n)
+			// Link packets vary in size depending on TLVs present:
+			// - Disconnect packets: ~20 bytes (header only)
+			// - Timeline packets: typically 82-120+ bytes
+			// Minimum valid packet is header (20 bytes) + at least some TLVs for timeline
+			minSize := 20 // Header size
+			if len(data) < minSize {
+				//log.Printf("Packet from %v too short (%d bytes)", src, n)
 				continue
 			}
 
@@ -146,7 +150,7 @@ func ListenForLinkPackets(ctx context.Context, p *ipv4.PacketConn, multicastIP n
 					ifaceName = iface.Name
 				}
 			}
-			rxChan <- PacketAndMep4{Data: data, MEP4: linkPacket.MEP4, Iface: ifaceName}
+			rxChan <- PacketAndMep4{Data: data, MEP4: linkPacket.MEP4Hex, Iface: ifaceName}
 
 			//fmt.Printf("Interface %s: Received Link packet from %v:\n", ifaceName, src)
 			//fmt.Printf("  Packet size: %d bytes\n", n)
@@ -184,9 +188,9 @@ func ListenForLinkPacketsUsingChannels(p *ipv4.PacketConn, multicastIP net.IP, l
 				continue
 			}
 
-			// Ensure the packet is long enough.
-			if n < 64 {
-				log.Printf("Packet too short from %v", src)
+			// Link packets vary in size - minimum is header (20 bytes)
+			if n < 20 {
+				log.Printf("Packet too short from %v (%d bytes)", src, n)
 				continue
 			}
 
@@ -195,10 +199,6 @@ func ListenForLinkPacketsUsingChannels(p *ipv4.PacketConn, multicastIP net.IP, l
 				continue
 			}
 			fmt.Printf("%s\n", linkPacket.String())
-
-			// Compute an MD5 hash for debugging.
-			//hash := md5.Sum(data)
-			//encodedHash := hex.EncodeToString(hash[:])
 
 			// Determine the interface on which the packet was received.
 			ifaceName := "unknown"
@@ -210,7 +210,6 @@ func ListenForLinkPacketsUsingChannels(p *ipv4.PacketConn, multicastIP net.IP, l
 
 			fmt.Printf("Interface %s: Received Link packet from %v:\n", ifaceName, src)
 			fmt.Printf("  Packet size: %d bytes\n", n)
-			//fmt.Printf("  MD5 hash: %s\n", encodedHash)
 			rxChan <- data
 		}
 	}

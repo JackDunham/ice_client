@@ -3,11 +3,13 @@ package session
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -16,12 +18,40 @@ import (
 )
 
 const (
-	LIGHTSAIL_CONTAINER_HOST   = "https://link-session-service.nrr4m2c4w38qw.us-west-2.cs.amazonlightsail.com"
-	LIGHTSAIL_CONTAINER_USER   = "admin"
-	LIGHTSAIL_CONTAINER_PASS   = "secret"
-	LIGHTSAIL_BASIC_AUTH_TOKEN = "YWRtaW46c2VjcmV0"
-	HOST_REFRESH_INTERVAL      = time.Second * 15
+	DEFAULT_SESSION_SERVER_HOST = "https://link-session-service.nrr4m2c4w38qw.us-west-2.cs.amazonlightsail.com"
+	DEFAULT_SESSION_USER        = "admin"
+	DEFAULT_SESSION_PASS        = "secret"
+	HOST_REFRESH_INTERVAL       = time.Second * 15
 )
+
+// Environment variable names for session server configuration
+const (
+	ENV_SESSION_SERVER   = "SESSION_SERVER"   // e.g., "http://172.28.0.11:8082"
+	ENV_SESSION_USER     = "SESSION_USER"     // e.g., "admin"
+	ENV_SESSION_PASSWORD = "SESSION_PASSWORD" // e.g., "secret"
+)
+
+// getSessionServerConfig returns the session server URL and auth token from env or defaults
+func getSessionServerConfig() (host, authToken string) {
+	host = os.Getenv(ENV_SESSION_SERVER)
+	if host == "" {
+		host = DEFAULT_SESSION_SERVER_HOST
+	}
+
+	user := os.Getenv(ENV_SESSION_USER)
+	if user == "" {
+		user = DEFAULT_SESSION_USER
+	}
+
+	pass := os.Getenv(ENV_SESSION_PASSWORD)
+	if pass == "" {
+		pass = DEFAULT_SESSION_PASS
+	}
+
+	// Create base64 auth token
+	authToken = base64.StdEncoding.EncodeToString([]byte(user + ":" + pass))
+	return host, authToken
+}
 
 type LinkSession struct {
 	SessionID      string
@@ -60,12 +90,13 @@ func (ls *LinkSession) UpdateSessionInfo() error {
 	sessionCtx, sessionCancelFunc := context.WithTimeout(context.Background(), time.Minute*time.Duration(5))
 	defer sessionCancelFunc()
 
-	sessionURL := fmt.Sprintf("%s/session/%s", LIGHTSAIL_CONTAINER_HOST, sessionID)
+	host, authToken := getSessionServerConfig()
+	sessionURL := fmt.Sprintf("%s/session/%s", host, sessionID)
 	sessionReq, reqCreationErr := http.NewRequestWithContext(sessionCtx, http.MethodGet, sessionURL, http.NoBody)
 	if reqCreationErr != nil {
 		return fmt.Errorf("failed to create session request: %w", reqCreationErr)
 	}
-	sessionReq.Header.Set("Authorization", fmt.Sprintf("Basic %s", LIGHTSAIL_BASIC_AUTH_TOKEN))
+	sessionReq.Header.Set("Authorization", fmt.Sprintf("Basic %s", authToken))
 
 	sessionClient := http.DefaultClient
 	sessionResp, sessErr := sessionClient.Do(sessionReq)
@@ -107,23 +138,26 @@ func (ls *LinkSession) JoinOrCreateSession(sessionID, relayAddress string) (stri
 	sessionCtx, sessionCancelFunc := context.WithTimeout(context.Background(), time.Minute*time.Duration(5))
 	defer sessionCancelFunc()
 
+	host, authToken := getSessionServerConfig()
 	var httpMethod string
 	var sessionURL string
 	// we are joining an existing session
 	if sessionID != "" {
 		httpMethod = http.MethodPut
-		sessionURL = fmt.Sprintf("%s/session/%s", LIGHTSAIL_CONTAINER_HOST, sessionID)
+		sessionURL = fmt.Sprintf("%s/session/%s", host, sessionID)
 	} else {
 		// we are creation a new session
-		sessionURL = fmt.Sprintf("%s/session", LIGHTSAIL_CONTAINER_HOST)
+		sessionURL = fmt.Sprintf("%s/session", host)
 		httpMethod = http.MethodPost
 	}
+
+	fmt.Printf("Session server: %s (method: %s)\n", sessionURL, httpMethod)
 
 	sessionReq, reqCreationErr := http.NewRequestWithContext(sessionCtx, httpMethod, sessionURL, bytes.NewBuffer(sessionEntryBytes))
 	if reqCreationErr != nil {
 		return "", fmt.Errorf("failed to create session request: %w", reqCreationErr)
 	}
-	sessionReq.Header.Set("Authorization", fmt.Sprintf("Basic %s", LIGHTSAIL_BASIC_AUTH_TOKEN))
+	sessionReq.Header.Set("Authorization", fmt.Sprintf("Basic %s", authToken))
 
 	sessionClient := http.DefaultClient
 	sessionResp, sessErr := sessionClient.Do(sessionReq)

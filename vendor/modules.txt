@@ -1,3 +1,5 @@
+# essaim.dev/al v0.0.0-20241030130601-1747e11869fd
+## explicit; go 1.23.0
 # github.com/davecgh/go-spew v1.1.1
 ## explicit
 github.com/davecgh/go-spew/spew

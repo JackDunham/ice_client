@@ -32,6 +32,14 @@ const (
 	DO_PING_TEST                  = false
 )
 
+// Environment variable names for TURN configuration
+const (
+	ENV_TURN_SERVER   = "TURN_SERVER"   // e.g., "172.28.0.10:3478"
+	ENV_TURN_USER     = "TURN_USER"     // e.g., "testuser"
+	ENV_TURN_PASSWORD = "TURN_PASSWORD" // e.g., "testpassword"
+	ENV_TURN_REALM    = "TURN_REALM"    // e.g., "test.local" (optional)
+)
+
 type TurnRelay struct {
 	RelayConn    net.PacketConn
 	UdpConn      net.PacketConn
@@ -82,7 +90,44 @@ func getHostPortUserCredRealm(creds *TurnCredentials) (host, port, user, cred, r
 	return
 }
 
-func getTurnCredentials() (*TurnCredentials, error) {
+// getTurnCredentialsFromEnv attempts to get TURN credentials from environment variables.
+// Returns nil if environment variables are not set.
+func getTurnCredentialsFromEnv() *TurnCredentials {
+	turnServer := os.Getenv(ENV_TURN_SERVER)
+	turnUser := os.Getenv(ENV_TURN_USER)
+	turnPassword := os.Getenv(ENV_TURN_PASSWORD)
+	turnRealm := os.Getenv(ENV_TURN_REALM)
+
+	if turnServer == "" || turnUser == "" || turnPassword == "" {
+		return nil
+	}
+
+	// Parse host:port
+	host := turnServer
+	port := "3478" // default TURN port
+	if idx := strings.LastIndex(turnServer, ":"); idx != -1 {
+		host = turnServer[:idx]
+		port = turnServer[idx+1:]
+	}
+
+	fmt.Printf("Using TURN server from environment: %s:%s (user: %s)\n", host, port, turnUser)
+
+	return &TurnCredentials{
+		IceServers: IceServers{
+			Urls:       []string{fmt.Sprintf("turn:%s:%s", host, port)},
+			Username:   turnUser,
+			Credential: turnPassword,
+		},
+		Host:  host,
+		Port:  port,
+		User:  turnUser,
+		Cred:  turnPassword,
+		Realm: turnRealm,
+	}
+}
+
+// getTurnCredentialsFromCloudflare fetches credentials from Cloudflare TURN API
+func getTurnCredentialsFromCloudflare() (*TurnCredentials, error) {
 	ctx, cancelFunc := context.WithTimeout(context.Background(), time.Second*time.Duration(5))
 	defer cancelFunc()
 
@@ -118,8 +163,20 @@ func getTurnCredentials() (*TurnCredentials, error) {
 		return nil, fmt.Errorf("failed to parse credentials: %w", err)
 	}
 	creds.Host, creds.Port, creds.User, creds.Cred, creds.Realm = getHostPortUserCredRealm(&creds)
-	fmt.Printf("Using ICE servers with username: %s\n", creds.IceServers.Username)
+	fmt.Printf("Using Cloudflare TURN with username: %s\n", creds.IceServers.Username)
 	return &creds, nil
+}
+
+// getTurnCredentials gets TURN credentials from environment variables or Cloudflare
+func getTurnCredentials() (*TurnCredentials, error) {
+	// First, try environment variables
+	if creds := getTurnCredentialsFromEnv(); creds != nil {
+		return creds, nil
+	}
+
+	// Fall back to Cloudflare
+	fmt.Println("No TURN environment variables set, using Cloudflare TURN...")
+	return getTurnCredentialsFromCloudflare()
 }
 
 func (turnRelay *TurnRelay) Shutdown() {
@@ -315,11 +372,18 @@ func (turnRelay *TurnRelay) ReadFromRelay(ctx context.Context) error {
 	}
 */
 func (turnRelay *TurnRelay) WriteToRelay(msg []byte) error {
-	for _, netAddr := range turnRelay.SessionHosts {
-		//fmt.Printf("Write bytes to Host Addr: +%v", netAddr)
-		n, err := turnRelay.UdpConn.WriteTo(msg, netAddr)
+	turnRelay.sessionMutex.Lock()
+	hosts := make([]net.Addr, len(turnRelay.SessionHosts))
+	copy(hosts, turnRelay.SessionHosts)
+	turnRelay.sessionMutex.Unlock()
+
+	for _, netAddr := range hosts {
+		// CRITICAL FIX: Use RelayConn (the TURN-allocated relay connection), not UdpConn.
+		// UdpConn is a local UDP socket that cannot reach peers behind NAT.
+		// RelayConn sends data through the TURN server which relays it to the destination.
+		n, err := turnRelay.RelayConn.WriteTo(msg, netAddr)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error writing %d bytes to Host Addr +%v: %s", n, netAddr, err.Error())
+			fmt.Fprintf(os.Stderr, "Error writing %d bytes to Host Addr %v: %s\n", n, netAddr, err.Error())
 		}
 	}
 	return nil
