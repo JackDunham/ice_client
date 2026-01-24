@@ -16,9 +16,6 @@ import (
 type Status struct {
 	NumPeers  uint64  `json:"num_peers"`
 	Tempo     float64 `json:"tempo"`
-	Beat      float64 `json:"beat"`
-	Phase     float64 `json:"phase"`
-	IsPlaying bool    `json:"is_playing"`
 	Timestamp string  `json:"timestamp"`
 }
 
@@ -29,8 +26,6 @@ func main() {
 	reportInterval := flag.Duration("interval", time.Second, "Status report interval")
 	duration := flag.Duration("duration", 0, "Run for this duration then exit (0 = run forever)")
 	outputJSON := flag.Bool("json", false, "Output status as JSON")
-	waitForPeers := flag.Int("wait-for-peers", 0, "Wait until this many peers are connected, then exit")
-	waitTimeout := flag.Duration("wait-timeout", 30*time.Second, "Timeout when waiting for peers")
 
 	flag.Parse()
 
@@ -40,20 +35,16 @@ func main() {
 
 	// Enable Link
 	link.Enable(true)
-	link.EnableStartStopSync(true)
 
-	// Set up peer count callback for logging
-	link.SetNumPeersCallback(func(numPeers uint64) {
-		if !*outputJSON {
-			fmt.Printf("[%s] Peer count changed: %d\n", time.Now().Format(time.RFC3339), numPeers)
-		}
-	})
+	// Give Link time to initialize
+	time.Sleep(100 * time.Millisecond)
 
-	// Set tempo if requested
+	// Set tempo if requested - use NewSessionState() constructor
 	if *setTempo > 0 {
-		state := &al.SessionState{}
+		state := al.NewSessionState()
+		defer state.Close()
 		link.CaptureAppSessionState(state)
-		state.SetTempo(*setTempo, time.Now())
+		state.SetTempo(*setTempo, link.Clock())
 		link.CommitAppSessionState(state)
 		if !*outputJSON {
 			fmt.Printf("Set tempo to %.2f BPM\n", *setTempo)
@@ -70,28 +61,21 @@ func main() {
 		durationTimer = time.After(*duration)
 	}
 
-	// Set up wait-for-peers timeout
-	var waitTimer <-chan time.Time
-	if *waitForPeers > 0 {
-		waitTimer = time.After(*waitTimeout)
-	}
-
 	// Status reporting ticker
 	ticker := time.NewTicker(*reportInterval)
 	defer ticker.Stop()
 
 	getStatus := func() Status {
-		state := &al.SessionState{}
+		state := al.NewSessionState()
 		link.CaptureAppSessionState(state)
-		now := time.Now()
+		tempo := state.Tempo()
+		numPeers := link.NumPeers()
+		state.Close()
 
 		return Status{
-			NumPeers:  link.NumPeers(),
-			Tempo:     state.Tempo(),
-			Beat:      state.BeatAtTime(now, 4.0),
-			Phase:     state.PhaseAtTime(now, 4.0),
-			IsPlaying: state.IsPlaying(),
-			Timestamp: now.Format(time.RFC3339Nano),
+			NumPeers:  numPeers,
+			Tempo:     tempo,
+			Timestamp: time.Now().Format(time.RFC3339Nano),
 		}
 	}
 
@@ -100,8 +84,8 @@ func main() {
 			data, _ := json.Marshal(status)
 			fmt.Println(string(data))
 		} else {
-			fmt.Printf("[%s] Peers: %d | Tempo: %.2f BPM | Beat: %.2f | Phase: %.2f | Playing: %v\n",
-				status.Timestamp, status.NumPeers, status.Tempo, status.Beat, status.Phase, status.IsPlaying)
+			fmt.Printf("[%s] Peers: %d | Tempo: %.2f BPM\n",
+				status.Timestamp, status.NumPeers, status.Tempo)
 		}
 	}
 
@@ -121,21 +105,8 @@ func main() {
 			printStatus(getStatus())
 			return
 
-		case <-waitTimer:
-			fmt.Fprintln(os.Stderr, "Timeout waiting for peers")
-			os.Exit(1)
-
 		case <-ticker.C:
-			status := getStatus()
-			printStatus(status)
-
-			// Check if we've reached the desired peer count
-			if *waitForPeers > 0 && int(status.NumPeers) >= *waitForPeers {
-				if !*outputJSON {
-					fmt.Fprintf(os.Stderr, "Reached %d peers, exiting successfully\n", *waitForPeers)
-				}
-				os.Exit(0)
-			}
+			printStatus(getStatus())
 		}
 	}
 }

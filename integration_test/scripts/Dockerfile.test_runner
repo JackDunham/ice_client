@@ -2,11 +2,13 @@ FROM docker:24-cli
 
 RUN apk add --no-cache \
     bash \
+    bc \
     curl \
+    docker-cli-compose \
     jq \
     netcat-openbsd
 
-# docker compose v2 is already included in docker:24-cli as a plugin
+# docker compose v2 is included via docker-cli-compose
 
 WORKDIR /scripts
 

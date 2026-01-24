@@ -120,6 +120,7 @@ func handleCreateSession(w http.ResponseWriter, r *http.Request) {
 
 // handleUpdateSession handles PUT /session/<session-id> requests.
 // It expects a JSON body like {"host": "1.2.3.4:5678"}.
+// If the session doesn't exist, it is created (upsert behavior).
 // If the host is not already in the session's list, it is added, and the updated list is returned.
 func handleUpdateSession(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
@@ -148,9 +149,12 @@ func handleUpdateSession(w http.ResponseWriter, r *http.Request) {
 	mu.Lock()
 	session, ok := sessions[sessionID]
 	if !ok {
-		mu.Unlock()
-		http.Error(w, "Session not found", http.StatusNotFound)
-		return
+		// Create the session if it doesn't exist (upsert behavior)
+		session = &Session{
+			Hosts:     []string{},
+			CreatedAt: time.Now(),
+		}
+		sessions[sessionID] = session
 	}
 
 	// Check for duplicate; the duplicate check is on the full "<ip>:<port>" string.

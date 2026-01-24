@@ -3,9 +3,9 @@
 # Default target
 all: infra
 
-# Build all images
+# Build all images (including all profiles)
 build:
-	docker compose build
+	docker compose --profile exchange --profile linktest --profile test build
 
 # Start infrastructure only (TURN + session server)
 infra:
@@ -48,20 +48,20 @@ logs:
 
 # Stop everything
 down:
-	docker compose --profile exchange --profile test down
+	docker compose --profile exchange --profile linktest --profile test down
 
 # Clean up everything including volumes and images
 clean: down
-	docker compose --profile exchange --profile test down -v --rmi local
+	docker compose --profile exchange --profile linktest --profile test down -v --rmi local
 	docker network prune -f
 
 # Show status
 status:
 	@echo "=== Containers ==="
-	docker compose --profile exchange ps
+	docker compose --profile exchange --profile linktest --profile test ps
 	@echo ""
 	@echo "=== Networks ==="
-	docker network ls | grep -E 'host_[ab]_net|turn_net'
+	docker network ls | grep -E 'host_[ab]_net|turn_net' || echo "(none running)"
 	@echo ""
 	@echo "=== Session Server Health ==="
 	@curl -s http://localhost:8082/ || echo "(not running)"

@@ -314,6 +314,38 @@ func RewriteMEP4IP(data []byte, newIP net.IP) ([]byte, error) {
 	return result, nil
 }
 
+// RewriteMEP4 rewrites both IP and port in the MEP4 TLV.
+// This is necessary when relaying packets so that the MEP4 matches
+// the UDP source address of the relayed packet.
+func RewriteMEP4(data []byte, newIP net.IP, newPort uint16) ([]byte, error) {
+	packet, err := ParseLinkPacket(data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse packet for rewrite: %w", err)
+	}
+
+	offset := packet.GetMEP4Offset()
+	if offset == -1 {
+		return nil, errors.New("mep4 TLV not found in packet")
+	}
+
+	ip4 := newIP.To4()
+	if ip4 == nil {
+		return nil, errors.New("invalid IPv4 address")
+	}
+
+	// Make a copy to avoid modifying the original
+	result := make([]byte, len(data))
+	copy(result, data)
+
+	// Rewrite the IP address (first 4 bytes of mep4 value)
+	copy(result[offset:offset+4], ip4)
+
+	// Rewrite the port (next 2 bytes, big-endian)
+	binary.BigEndian.PutUint16(result[offset+4:offset+6], newPort)
+
+	return result, nil
+}
+
 // IsValidLinkPacket performs quick validation on raw data.
 func IsValidLinkPacket(data []byte) bool {
 	if len(data) < HeaderSize {
