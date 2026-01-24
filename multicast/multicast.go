@@ -53,9 +53,6 @@ func JoinMulticastGroups(p *ipv4.PacketConn, groupIP net.IP) {
 		group := &net.UDPAddr{IP: groupIP}
 		if err := p.JoinGroup(&iface, group); err != nil {
 			fmt.Fprintf(os.Stderr, "Interface %s: failed to join multicast group %s: %v", iface.Name, groupIP, err)
-			//log.Printf("Interface %s: failed to join multicast group %s: %v", iface.Name, groupIP, err)
-		} else {
-			//log.Printf("Interface %s: successfully joined multicast group %s", iface.Name, groupIP)
 		}
 	}
 }
@@ -97,7 +94,6 @@ type PacketAndMep4 struct {
 }
 
 func ListenForLinkPackets(ctx context.Context, p *ipv4.PacketConn, multicastIP net.IP, linkHeader string, rxChan chan PacketAndMep4) {
-	//log.Printf("Listening for Ableton Link packets on %s (bound on 0.0.0.0:20808)", UDP4MulticastAddress)
 	buf := make([]byte, MaxDatagramSize)
 	for {
 		select {
@@ -111,26 +107,19 @@ func ListenForLinkPackets(ctx context.Context, p *ipv4.PacketConn, multicastIP n
 			}
 			data := buf[:n]
 
-			// Optionally, check that the destination address in the control message matches the multicast group.
+			// Check that the destination address in the control message matches the multicast group.
 			if cm != nil && !cm.Dst.Equal(multicastIP) {
 				continue
 			}
-
-			// For debugging, log the first 32 bytes.
-			//log.Printf("Received packet from %v: % x", src, data[:Min(n, 32)])
 
 			// Filter for packets that begin with the expected Link header.
 			if len(data) < len(linkHeader) || string(data[:len(linkHeader)]) != linkHeader {
 				continue
 			}
 
-			// Link packets vary in size depending on TLVs present:
-			// - Disconnect packets: ~20 bytes (header only)
-			// - Timeline packets: typically 82-120+ bytes
-			// Minimum valid packet is header (20 bytes) + at least some TLVs for timeline
-			minSize := 20 // Header size
+			// Minimum valid packet is header (20 bytes)
+			minSize := 20
 			if len(data) < minSize {
-				//log.Printf("Packet from %v too short (%d bytes)", src, n)
 				continue
 			}
 
@@ -138,10 +127,6 @@ func ListenForLinkPackets(ctx context.Context, p *ipv4.PacketConn, multicastIP n
 			if err != nil {
 				continue
 			}
-			//fmt.Printf("%s\n", linkPacket.String())
-			// Compute an MD5 hash for debugging.
-			//hash := md5.Sum(data)
-			//encodedHash := hex.EncodeToString(hash[:])
 
 			// Determine the interface on which the packet was received.
 			ifaceName := "unknown"
@@ -151,66 +136,6 @@ func ListenForLinkPackets(ctx context.Context, p *ipv4.PacketConn, multicastIP n
 				}
 			}
 			rxChan <- PacketAndMep4{Data: data, MEP4: linkPacket.MEP4Hex, Iface: ifaceName}
-
-			//fmt.Printf("Interface %s: Received Link packet from %v:\n", ifaceName, src)
-			//fmt.Printf("  Packet size: %d bytes\n", n)
-			//fmt.Printf("  MD5 hash: %s\n", encodedHash)
-		}
-	}
-}
-
-// TODO(jack): deprecated -- remove
-func ListenForLinkPacketsUsingChannels(p *ipv4.PacketConn, multicastIP net.IP, linkHeader string, rxChan chan []byte, killChan chan bool) {
-	//log.Printf("Listening for Ableton Link packets on %s (bound on 0.0.0.0:20808)", UDP4MulticastAddress)
-	buf := make([]byte, MaxDatagramSize)
-	for {
-		select {
-		case <-killChan:
-			return
-		default:
-			n, cm, src, err := p.ReadFrom(buf)
-			if err != nil {
-				//log.Printf("Read error: %s", err.Error())
-				continue
-			}
-			data := buf[:n]
-
-			// Optionally, check that the destination address in the control message matches the multicast group.
-			if cm != nil && !cm.Dst.Equal(multicastIP) {
-				continue
-			}
-
-			// For debugging, log the first 32 bytes.
-			log.Printf("Received packet from %v: % x", src, data[:Min(n, 32)])
-
-			// Filter for packets that begin with the expected Link header.
-			if len(data) < len(linkHeader) || string(data[:len(linkHeader)]) != linkHeader {
-				continue
-			}
-
-			// Link packets vary in size - minimum is header (20 bytes)
-			if n < 20 {
-				log.Printf("Packet too short from %v (%d bytes)", src, n)
-				continue
-			}
-
-			linkPacket, err := link.ParseLinkPacket(data)
-			if err != nil {
-				continue
-			}
-			fmt.Printf("%s\n", linkPacket.String())
-
-			// Determine the interface on which the packet was received.
-			ifaceName := "unknown"
-			if cm != nil && cm.IfIndex != 0 {
-				if iface, err := net.InterfaceByIndex(cm.IfIndex); err == nil {
-					ifaceName = iface.Name
-				}
-			}
-
-			fmt.Printf("Interface %s: Received Link packet from %v:\n", ifaceName, src)
-			fmt.Printf("  Packet size: %d bytes\n", n)
-			rxChan <- data
 		}
 	}
 }
@@ -221,7 +146,7 @@ func GetMulticastPacketConnection(pc net.PacketConn, linkMulticastAddress string
 		return nil, nil, fmt.Errorf("Error setting control message: %w", err)
 	}
 
-	// Optionally, set the underlying connection's read buffer.
+	// Set the underlying connection's read buffer.
 	if udpConn, ok := pc.(*net.UDPConn); ok {
 		if err := udpConn.SetReadBuffer(MaxDatagramSize); err != nil {
 			return nil, nil, fmt.Errorf("failed to set read buffer: %w", err)
@@ -238,18 +163,41 @@ func GetMulticastPacketConnection(pc net.PacketConn, linkMulticastAddress string
 }
 
 // SendLinkPacket sends a valid link-packet packet to the multicast group.
+// NOTE: This uses SetMulticastInterface which must be called before this function.
+// For explicit interface control, use SendLinkPacketOnInterface instead.
 func SendLinkPacket(p *ipv4.PacketConn, multicastIP net.IP, linkMsg []byte) error {
-	// Resolve the destination address using the multicast address constant.
-	// TODO(jack): pre-resolve this and move this out of the (enclosing) hot loop
 	destAddr, err := net.ResolveUDPAddr("udp4", UDP4MulticastAddress)
 	if err != nil {
 		return fmt.Errorf("failed to resolve multicast address: %v", err)
 	}
 
-	// Use nil for the ControlMessage.
 	n, err := p.WriteTo(linkMsg, nil, destAddr)
 	if err != nil {
 		return fmt.Errorf("failed to send packet: %v", err)
+	}
+	if n != len(linkMsg) {
+		return fmt.Errorf("sent %d bytes, expected %d", n, len(linkMsg))
+	}
+	return nil
+}
+
+// SendLinkPacketOnInterface sends a link packet to the multicast group via a specific interface.
+// This explicitly sets the outgoing interface in the control message.
+func SendLinkPacketOnInterface(p *ipv4.PacketConn, iface *net.Interface, linkMsg []byte) error {
+	destAddr, err := net.ResolveUDPAddr("udp4", UDP4MulticastAddress)
+	if err != nil {
+		return fmt.Errorf("failed to resolve multicast address: %v", err)
+	}
+
+	// Create control message to specify the outgoing interface
+	var cm *ipv4.ControlMessage
+	if iface != nil {
+		cm = &ipv4.ControlMessage{IfIndex: iface.Index}
+	}
+
+	n, err := p.WriteTo(linkMsg, cm, destAddr)
+	if err != nil {
+		return fmt.Errorf("failed to send packet on interface %s: %v", iface.Name, err)
 	}
 	if n != len(linkMsg) {
 		return fmt.Errorf("sent %d bytes, expected %d", n, len(linkMsg))

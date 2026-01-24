@@ -92,11 +92,17 @@ services:
     sysctls:
       - net.ipv4.igmp_max_memberships=100
 
-  exchange_a:
+  exchange:
     build:
       context: ..
       dockerfile: integration_test/dockerfiles/Dockerfile.exchange
-    container_name: exchange_a
+    image: ice_client_exchange
+    profiles:
+      - build
+
+  exchange_a:
+    image: ice_client_exchange  # No build, just reference the image
+    container_name: exchange_a  
     networks:
       host_a_net:
         ipv4_address: 172.28.1.10
@@ -134,9 +140,7 @@ services:
       - net.ipv4.igmp_max_memberships=100
 
   exchange_b:
-    build:
-      context: ..
-      dockerfile: integration_test/dockerfiles/Dockerfile.exchange
+    image: ice_client_exchange  # No build, just reference the image
     container_name: exchange_b
     networks:
       host_b_net:

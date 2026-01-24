@@ -550,6 +550,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	//fmt.Printf("relay1 host: %+v", relay1.RelayConn.LocalAddr())
 
 	// Join or create link session
 	linkSession1 := &session.LinkSession{}
@@ -688,6 +689,7 @@ func main() {
 			case <-ticker.C:
 				relay1.WriteToRelay([]byte("PING"))
 			case linkPacket := <-rxChan:
+				//fmt.Printf("LinkPacket %+v", linkPacket)
 				// if this packet was already recorded as coming from "outside", don't relay it
 				val, ok := GetFromMepMap(linkPacket.MEP4)
 				if val == RemoteNetwork {
@@ -718,7 +720,7 @@ func main() {
 	// listen for messages from "outside", send to this relay endpoint
 	/////////////////////
 	/////////////////////
-	go func(ctx context.Context, relay1 *relay.TurnRelay, exchangeStatus *ExchangeStatus, pingPongProxy *PingPongProxy) {
+	go func(ctx context.Context, relay1 *relay.TurnRelay, exchangeStatus *ExchangeStatus, pingPongProxy *PingPongProxy, localIface *net.Interface) {
 		for {
 			select {
 			case <-ctx.Done():
@@ -775,11 +777,10 @@ func main() {
 				}
 				nodeID := fmt.Sprintf("%x", linkPacket.Header.ClientID)
 
-				// Rewrite MEP4 (IP and port) to point to our ping/pong proxy.
-				// When local Link clients try to do unicast ping/pong measurement,
-				// they'll send to localIP:20809 where our proxy is listening.
-				// The proxy will relay ping/pong traffic through TURN.
-				rewrittenMsg, err := link.RewriteMEP4(msg, localIP, PingPongProxyPort)
+				// Rewrite MEP4 (IP and port) so it matches our UDP source address.
+				// Link validates that UDP source matches MEP4 to prevent spoofing.
+				// We're sending from localIP:20808, so MEP4 must be localIP:20808.
+				rewrittenMsg, err := link.RewriteMEP4(msg, localIP, 20808)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Failed to rewrite MEP4: %s\n", err.Error())
 					// Fall back to sending original packet
@@ -796,12 +797,12 @@ func main() {
 					StoreMEP4Mapping(rewrittenPacket.MEP4Hex, originalMEP4, nodeID)
 				}
 
-				multicast.SendLinkPacket(p, multicastIP, rewrittenMsg)
+				multicast.SendLinkPacketOnInterface(p, localIface, rewrittenMsg)
 				exchangeStatus.SetLastIn(linkPacket)
 				exchangeStatus.IncrInCount()
 			}
 		}
-	}(ctx, relay1, exchangeStatus, pingPongProxy)
+	}(ctx, relay1, exchangeStatus, pingPongProxy, localIface)
 
 	go func(ctx context.Context, exchangeStatus *ExchangeStatus) {
 		ticker := time.NewTicker(1 * time.Second)
