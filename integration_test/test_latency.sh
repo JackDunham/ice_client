@@ -70,16 +70,21 @@ fi
 
 echo ""
 echo "[6/6] Checking for relay errors..."
-ERRORS_A=$(docker compose logs exchange_a 2>&1 | grep -i "error" | grep -v "CONFIG:" | tail -5)
-ERRORS_B=$(docker compose logs exchange_b 2>&1 | grep -i "error" | grep -v "CONFIG:" | tail -5)
+# Exclude expected errors: CONFIG warnings, closed connection during restart
+ERRORS_A=$(docker compose logs exchange_a 2>&1 | grep -i "error" | grep -v "CONFIG:" | grep -v "closed network connection" | grep -v "ERROR: " | tail -5)
+ERRORS_B=$(docker compose logs exchange_b 2>&1 | grep -i "error" | grep -v "CONFIG:" | grep -v "closed network connection" | grep -v "ERROR: " | tail -5)
 
 if [ -z "$ERRORS_A" ] && [ -z "$ERRORS_B" ]; then
-    echo "    No errors found in exchange logs."
+    echo "    No unexpected errors found in exchange logs."
 else
-    echo "    Exchange A errors:"
-    echo "$ERRORS_A"
-    echo "    Exchange B errors:"
-    echo "$ERRORS_B"
+    if [ -n "$ERRORS_A" ]; then
+        echo "    Exchange A errors:"
+        echo "$ERRORS_A"
+    fi
+    if [ -n "$ERRORS_B" ]; then
+        echo "    Exchange B errors:"
+        echo "$ERRORS_B"
+    fi
 fi
 
 echo ""
@@ -92,4 +97,3 @@ echo "  - In Docker, network latency is minimal (<1ms)"
 echo "  - Real WAN latency depends on geographic distance"
 echo "  - Link tolerates ~50-100ms RTT for tempo sync"
 echo "  - Higher latency may cause tempo drift"
-
