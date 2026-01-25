@@ -94,6 +94,12 @@ type PacketAndMep4 struct {
 }
 
 func ListenForLinkPackets(ctx context.Context, p *ipv4.PacketConn, multicastIP net.IP, linkHeader string, rxChan chan PacketAndMep4) {
+	ListenForLinkPacketsWithUnicast(ctx, p, multicastIP, linkHeader, rxChan, nil)
+}
+
+// ListenForLinkPacketsWithUnicast listens for Link packets and optionally forwards unicast packets
+// (like measurement/ping-pong packets) to a separate channel.
+func ListenForLinkPacketsWithUnicast(ctx context.Context, p *ipv4.PacketConn, multicastIP net.IP, linkHeader string, rxChan chan PacketAndMep4, unicastChan chan PacketAndMep4) {
 	buf := make([]byte, MaxDatagramSize)
 	for {
 		select {
@@ -107,8 +113,20 @@ func ListenForLinkPackets(ctx context.Context, p *ipv4.PacketConn, multicastIP n
 			}
 			data := buf[:n]
 
-			// Check that the destination address in the control message matches the multicast group.
+			// Check if this is a unicast packet (not destined for multicast group)
 			if cm != nil && !cm.Dst.Equal(multicastIP) {
+				// This is a unicast packet - likely a measurement/ping-pong packet
+				// Forward to unicastChan if provided
+				if unicastChan != nil && len(data) >= 7 {
+					ifaceName := "unknown"
+					if cm.IfIndex != 0 {
+						if iface, err := net.InterfaceByIndex(cm.IfIndex); err == nil {
+							ifaceName = iface.Name
+						}
+					}
+					// Include source address in MEP4 field for routing
+					unicastChan <- PacketAndMep4{Data: data, MEP4: src.String(), Iface: ifaceName}
+				}
 				continue
 			}
 

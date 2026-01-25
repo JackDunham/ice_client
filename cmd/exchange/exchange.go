@@ -681,7 +681,45 @@ func main() {
 	multicast.JoinMulticastGroups(p, multicastIP)
 	// Listen for link-packets on local network interface(s) + retransmit to relay
 	rxChan := make(chan multicast.PacketAndMep4, 1024)
-	go multicast.ListenForLinkPackets(ctx, p, multicastIP, multicast.LinkHeader, rxChan)
+	unicastChan := make(chan multicast.PacketAndMep4, 1024) // For measurement packets
+	go multicast.ListenForLinkPacketsWithUnicast(ctx, p, multicastIP, multicast.LinkHeader, rxChan, unicastChan)
+
+	// Handle unicast measurement packets - forward to relay with 'P' prefix and source address
+	go func(ctx context.Context, unicastChan chan multicast.PacketAndMep4, relay1 *relay.TurnRelay) {
+		for {
+			select {
+			case pkt := <-unicastChan:
+				// Parse the source address (MEP4 field contains "IP:port")
+				srcAddr, err := net.ResolveUDPAddr("udp4", pkt.MEP4)
+				if err != nil {
+					log.Printf("DEBUG: Failed to parse unicast source %s: %v", pkt.MEP4, err)
+					continue
+				}
+
+				// Wrap packet with source IP:port (6 bytes) + original data
+				// Format: [IP0][IP1][IP2][IP3][PortHi][PortLo][original packet...]
+				ip4 := srcAddr.IP.To4()
+				if ip4 == nil {
+					log.Printf("DEBUG: Non-IPv4 address: %s", pkt.MEP4)
+					continue
+				}
+
+				wrapper := make([]byte, 6+len(pkt.Data))
+				copy(wrapper[0:4], ip4)
+				wrapper[4] = byte(srcAddr.Port >> 8)
+				wrapper[5] = byte(srcAddr.Port & 0xff)
+				copy(wrapper[6:], pkt.Data)
+
+				// Add 'P' prefix and send to relay
+				relayMsg := append([]byte{RelayPrefixPingPong}, wrapper...)
+				relay1.WriteToRelay(relayMsg)
+				log.Printf("DEBUG: Forwarding %d byte unicast packet to relay (from %s)", len(pkt.Data), pkt.MEP4)
+			case <-ctx.Done():
+				return
+			}
+		}
+	}(ctx, unicastChan, relay1)
+
 	go func(ctx context.Context, rxChan chan multicast.PacketAndMep4, relay1 *relay.TurnRelay, exchangeStatus *ExchangeStatus) {
 		ticker := time.NewTicker(10 * time.Second)
 		for {
@@ -721,6 +759,13 @@ func main() {
 	/////////////////////
 	/////////////////////
 	go func(ctx context.Context, relay1 *relay.TurnRelay, exchangeStatus *ExchangeStatus, pingPongProxy *PingPongProxy, localIface *net.Interface) {
+		// Debug: verify localIface at goroutine start
+		if localIface == nil {
+			log.Printf("ERROR: localIface is nil in relay->multicast goroutine!")
+		} else {
+			log.Printf("DEBUG: relay->multicast goroutine started with localIface=%s (index=%d)", localIface.Name, localIface.Index)
+		}
+
 		for {
 			select {
 			case <-ctx.Done():
@@ -742,6 +787,7 @@ func main() {
 
 				// Validate it's a Link packet (minimum header size)
 				if !link.IsValidLinkPacket(msg) {
+					log.Printf("DEBUG: Skipping non-Link packet (%d bytes)", len(msg))
 					continue
 				}
 
@@ -753,17 +799,20 @@ func main() {
 
 				// Skip disconnect packets - they have no MEP4
 				if linkPacket.IsDisconnect {
+					log.Printf("DEBUG: Skipping disconnect packet")
 					continue
 				}
 
 				// Need MEP4 for deduplication
 				if linkPacket.MEP4Hex == "" {
+					log.Printf("DEBUG: Skipping packet with empty MEP4Hex")
 					continue
 				}
 
 				// If we've already seen this source in the local network, skip it.
 				val, ok := GetFromMepMap(linkPacket.MEP4Hex)
 				if val == LocalNetwork {
+					log.Printf("DEBUG: Skipping packet from LocalNetwork MEP4=%s", linkPacket.MEP4Hex)
 					continue
 				} else if !ok {
 					// First time we've seen this packet-source. Record it.
@@ -797,7 +846,10 @@ func main() {
 					StoreMEP4Mapping(rewrittenPacket.MEP4Hex, originalMEP4, nodeID)
 				}
 
-				multicast.SendLinkPacketOnInterface(p, localIface, rewrittenMsg)
+				log.Printf("DEBUG: Sending %d bytes to multicast via %s", len(rewrittenMsg), localIface.Name)
+				if err := multicast.SendLinkPacketOnInterface(p, localIface, rewrittenMsg); err != nil {
+					log.Printf("ERROR: SendLinkPacketOnInterface failed: %v", err)
+				}
 				exchangeStatus.SetLastIn(linkPacket)
 				exchangeStatus.IncrInCount()
 			}
