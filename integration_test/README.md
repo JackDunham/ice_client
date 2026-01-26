@@ -2,6 +2,82 @@
 
 This directory contains Docker-based integration tests for the Link-over-WAN relay system.
 
+## Quick Start - Running Tests
+
+### 1. Basic Connectivity Test
+
+```bash
+# Full test with rebuild (use after code changes)
+./test_link_wan.sh --keep
+
+# Quick test (skip rebuild if images exist)
+./test_link_wan.sh --no-rebuild --keep
+```
+
+**Options:**
+- `--keep`: Leave containers running after test (for subsequent tests or debugging)
+- `--no-rebuild`: Skip Docker image rebuild (faster, requires images to exist)
+
+**What it tests:**
+- TURN server and session server startup
+- Exchange relay connectivity
+- Link peer discovery across isolated networks
+
+### 2. Tempo Sync Test
+
+```bash
+# Requires: ./test_link_wan.sh --keep (run first)
+./test_tempo_sync.sh
+```
+
+**What it tests:**
+- Two Link clients start with different tempos (95 vs 140 BPM)
+- Verifies they converge to the same tempo via WAN relay
+- Uses 0.1 BPM tolerance for floating-point comparison
+
+### 3. Latency & Throughput Test
+
+```bash
+# Requires: ./test_link_wan.sh --keep (run first)
+./test_latency.sh
+```
+
+**What it tests:**
+- Network RTT to TURN server
+- Relay packet throughput (packets/sec)
+- Checks for unexpected errors in exchange logs
+
+## Typical Test Workflow
+
+```bash
+# 1. Run full connectivity test (builds images, starts everything)
+./test_link_wan.sh --keep
+
+# 2. Run tempo sync test
+./test_tempo_sync.sh
+
+# 3. Run latency test
+./test_latency.sh
+
+# 4. Clean up when done
+docker compose down
+```
+
+## Re-running Tests
+
+Both `test_tempo_sync.sh` and `test_latency.sh` clean up after themselves by restarting containers. You can run them repeatedly without re-running `test_link_wan.sh`:
+
+```bash
+./test_tempo_sync.sh   # Can run multiple times
+./test_latency.sh      # Can run multiple times
+```
+
+To start fresh (e.g., after code changes):
+
+```bash
+./test_link_wan.sh --keep   # Rebuilds everything
+```
+
 ## Architecture
 
 The test setup creates isolated network environments to simulate two separate LANs that can only communicate via a TURN relay:
