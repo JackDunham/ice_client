@@ -4,7 +4,7 @@ This directory contains Docker-based integration tests for the Link-over-WAN rel
 
 ## Quick Start - Running Tests
 
-### 1. Basic Connectivity Test
+### 1. Basic Connectivity Test (Local Infrastructure)
 
 ```bash
 # Full test with rebuild (use after code changes)
@@ -47,7 +47,35 @@ This directory contains Docker-based integration tests for the Link-over-WAN rel
 - Relay packet throughput (packets/sec)
 - Checks for unexpected errors in exchange logs
 
+### 4. Production Infrastructure Test
+
+Tests with REAL Cloudflare TURN servers and AWS Lightsail session server:
+
+```bash
+# Set your Cloudflare API token first
+export CLOUDFLARE_BEARER_TOKEN="your-cloudflare-api-token"
+
+# Run production test
+./test_production.sh --keep
+```
+
+**Requires:**
+- `CLOUDFLARE_BEARER_TOKEN` environment variable (get from Cloudflare dashboard > Calls > TURN)
+- Internet connectivity to Cloudflare and AWS
+
+**What it tests:**
+- Real Cloudflare STUN/TURN server connectivity
+- Real AWS Lightsail session server
+- End-to-end peer discovery via production infrastructure
+- Real-world network latency
+
+**Files:**
+- `test_production.sh` - Test script
+- `docker-compose.prod.yml` - Docker compose with isolated networks, no local TURN/session server
+
 ## Typical Test Workflow
+
+### Local Testing (Development)
 
 ```bash
 # 1. Run full connectivity test (builds images, starts everything)
@@ -61,6 +89,19 @@ This directory contains Docker-based integration tests for the Link-over-WAN rel
 
 # 4. Clean up when done
 docker compose down
+```
+
+### Production Validation
+
+```bash
+# 1. Set Cloudflare credentials
+export CLOUDFLARE_BEARER_TOKEN="your-token"
+
+# 2. Run production test
+./test_production.sh --keep
+
+# 3. Clean up
+docker compose -f docker-compose.prod.yml down
 ```
 
 ## Re-running Tests
