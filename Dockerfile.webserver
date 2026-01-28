@@ -1,11 +1,11 @@
-# Build stage: use Go 1.22 on Alpine Linux.
+# Build stage: use Go 1.23 on Alpine Linux.
 FROM golang:1.23-alpine AS builder
 
 # Set GOFLAGS to force use of vendor'd dependencies.
 ENV GOFLAGS=-mod=vendor
 
 # Install git (if needed) and any other packages.
-RUN apk add --no-cache git
+RUN apk add --no-cache git ca-certificates
 
 WORKDIR /app
 
@@ -22,12 +22,14 @@ RUN CGO_ENABLED=0 GOOS=linux go build -a -o webserver cmd/http/main.go
 # Final stage: use a minimal scratch image.
 FROM scratch
 
+# Copy CA certificates for HTTPS requests
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+
 # Copy the built binary from the builder stage.
 COPY --from=builder /app/webserver /webserver
 
-# Expose the port your webserver listens on (adjust if necessary).
-EXPOSE 8080
+# Expose the port your webserver listens on.
+EXPOSE 8082
 
 # Run the webserver binary.
 ENTRYPOINT ["/webserver"]
-
