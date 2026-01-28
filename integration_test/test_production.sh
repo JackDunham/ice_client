@@ -86,7 +86,7 @@ echo "[3/9] Configuring environment..."
 export TURN_SERVER="turn.cloudflare.com:3478"
 export SESSION_SERVER="https://link-session-service.nrr4m2c4w38qw.us-west-2.cs.amazonlightsail.com"
 export SESSION_USER="admin"
-export SESSION_PASSWORD="secret"
+export SESSION_PASSWORD="supersecret"
 export SESSION_ID=$(uuidgen | tr '[:upper:]' '[:lower:]')
 
 echo "    TURN_SERVER: $TURN_SERVER"
