@@ -149,8 +149,8 @@ func handleTurnCredentials(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check for error response
-	if resp.StatusCode != http.StatusOK {
+	// Check for error response (accept any 2xx status)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		http.Error(w, "Cloudflare API error: "+string(body), resp.StatusCode)
 		log.Printf("ERROR: Cloudflare API returned %d: %s", resp.StatusCode, string(body))
 		return
