@@ -554,10 +554,14 @@ func main() {
 
 	// Join or create link session
 	linkSession1 := &session.LinkSession{}
+	var sessionErr error
 	if sessionID == nil {
-		linkSession1.JoinOrCreateSession("", relay1.ThisHost)
+		_, sessionErr = linkSession1.JoinOrCreateSession("", relay1.ThisHost)
 	} else {
-		linkSession1.JoinOrCreateSession(*sessionID, relay1.ThisHost)
+		_, sessionErr = linkSession1.JoinOrCreateSession(*sessionID, relay1.ThisHost)
+	}
+	if sessionErr != nil {
+		log.Fatalf("Failed to join/create session: %v", sessionErr)
 	}
 	os.WriteFile("current_session_id", []byte(linkSession1.SessionID+"\n"), 0o644)
 

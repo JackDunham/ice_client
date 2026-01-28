@@ -3,7 +3,12 @@
 #
 # REQUIRED: Set CLOUDFLARE_BEARER_TOKEN environment variable
 #   export CLOUDFLARE_BEARER_TOKEN="your-api-token"
-#   ./test_production.sh [--keep] [--no-rebuild]
+#   ./test_production.sh [--keep] [--no-rebuild] [--hard-clean]
+#
+# Options:
+#   --keep        Leave containers running after test
+#   --no-rebuild  Skip Docker image rebuild
+#   --hard-clean  Remove all containers, networks, and images before starting
 #
 # This test validates:
 # - Real Cloudflare STUN/TURN connectivity
@@ -14,6 +19,7 @@ set -e
 
 KEEP_RUNNING=false
 SKIP_REBUILD=false
+HARD_CLEAN=false
 TEST_DURATION=60  # Longer timeout for real network latency
 
 # Parse arguments
@@ -27,6 +33,10 @@ for arg in "$@"; do
             SKIP_REBUILD=true
             shift
             ;;
+        --hard-clean)
+            HARD_CLEAN=true
+            shift
+            ;;
     esac
 done
 
@@ -34,8 +44,34 @@ echo "=============================================="
 echo "Production Infrastructure Test"
 echo "=============================================="
 echo "Using: Cloudflare TURN + AWS Lightsail Session Server"
-echo "Options: KEEP_RUNNING=$KEEP_RUNNING, SKIP_REBUILD=$SKIP_REBUILD"
+echo "Options: KEEP_RUNNING=$KEEP_RUNNING, SKIP_REBUILD=$SKIP_REBUILD, HARD_CLEAN=$HARD_CLEAN"
 echo ""
+
+# Hard clean if requested
+if [ "$HARD_CLEAN" = true ]; then
+    echo "[0/9] Performing hard clean..."
+    
+    # Stop and remove all production test containers by name
+    echo "    Stopping containers..."
+    docker stop link_client_b_prod link_client_a_prod exchange_a_prod exchange_b_prod 2>/dev/null || true
+    docker stop link_client_b link_client_a exchange_a exchange_b 2>/dev/null || true
+    docker stop turn_server session_server 2>/dev/null || true
+    
+    echo "    Removing containers..."
+    docker rm -f link_client_b_prod link_client_a_prod exchange_a_prod exchange_b_prod 2>/dev/null || true
+    docker rm -f link_client_b link_client_a exchange_a exchange_b 2>/dev/null || true
+    docker rm -f turn_server session_server 2>/dev/null || true
+    
+    echo "    Pruning networks..."
+    docker network prune -f 2>/dev/null || true
+    
+    echo "    Removing old images..."
+    docker rmi ice_client_exchange_prod ice_client_link_test_prod 2>/dev/null || true
+    docker rmi exchange:latest link_test_client:latest 2>/dev/null || true
+    
+    echo "    Hard clean complete."
+    echo ""
+fi
 
 # Step 1: Check for required environment variable
 echo "[1/9] Checking for CLOUDFLARE_BEARER_TOKEN..."

@@ -11,13 +11,13 @@ networks:
   # Isolated host networks - cannot reach each other or internet
   host_a_net:
     driver: bridge
-    internal: true
+    internal: false
     ipam:
       config:
         - subnet: 172.29.1.0/24
   host_b_net:
     driver: bridge
-    internal: true
+    internal: false
     ipam:
       config:
         - subnet: 172.29.2.0/24
