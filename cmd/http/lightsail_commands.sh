@@ -17,7 +17,27 @@ xattr -c /usr/local/bin/lightsailctl
 aws lightsail push-container-image --region us-west-2 --service-name link-session-service  --label session-server-label --image session-server:latest
 aws lightsail create-container-service-deployment   --service-name link-session-service   --containers file://containers.json   --public-endpoint file://public-endpoint.json   --region us-west-2
 
+aws lightsail get-container-services --service-name link-session-service --region us-west-2 --query 'containerServices[0].state'
+#"DEPLOYING"
 
+aws lightsail get-container-services --service-name link-session-service --region us-west-2 --query 'containerServices[0].currentDeployment.containers'
+#{
+#    "link-session-service": {
+#        "image": ":link-session-service.session-server-img-3.5",
+#        "command": [],
+#        "environment": {
+#            "BASIC_AUTH_PASSWORD": "XXXXXX",
+#            "BASIC_AUTH_USER": "YYYYYY",
+#            "CLOUDFLARE_BEARER_TOKEN": "ZZZZZZZZZZZ"
+#        },
+#        "ports": {
+#            "8082": "HTTP"
+#        }
+#    }
+#}
+
+# grep logs
+aws lightsail get-container-log   --service-name link-session-service   --container-name link-session-service   --region us-west-2   --output text | grep -i "error\|ERROR\|cloudflare\|turn"
 
 #aws lightsail push-container-image --region us-west-2 --service-name link-session-service  --label session-server-img-2 --image session-server:latest
 #7b1c94b69c6c: Layer already exists 
