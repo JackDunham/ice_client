@@ -4,8 +4,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -17,13 +19,27 @@ import (
 const (
 	ServerListenPort = ":8082"
 
-	// BasicAuth credentials (change these as desired)
-	BasicAuthUsername = "admin"
-	BasicAuthPassword = "secret"
-
 	// Session expiration duration.
 	SessionExpiration = 8 * time.Hour
+
+	// Cloudflare TURN API
+	CloudflareTurnKeyID  = "0dcb3c9c553467f3ca69f05a6afd39ce"
+	CloudflareTurnAPIURL = "https://rtc.live.cloudflare.com/v1/turn/keys/%s/credentials/generate"
 )
+
+// getAuthCredentials returns username and password from environment variables
+// with fallback defaults for backward compatibility
+func getAuthCredentials() (string, string) {
+	user := os.Getenv("BASIC_AUTH_USER")
+	if user == "" {
+		user = "admin"
+	}
+	pass := os.Getenv("BASIC_AUTH_PASSWORD")
+	if pass == "" {
+		pass = "secret"
+	}
+	return user, pass
+}
 
 // Session holds the list of hosts for a session, plus the creation time.
 type Session struct {
@@ -63,7 +79,8 @@ func basicAuthMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		pair := strings.SplitN(string(payload), ":", 2)
-		if len(pair) != 2 || pair[0] != BasicAuthUsername || pair[1] != BasicAuthPassword {
+		expectedUser, expectedPass := getAuthCredentials()
+		if len(pair) != 2 || pair[0] != expectedUser || pair[1] != expectedPass {
 			w.Header().Set("WWW-Authenticate", `Basic realm="Restricted"`)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
@@ -74,9 +91,74 @@ func basicAuthMiddleware(next http.Handler) http.Handler {
 
 // healthCheckHandler provides an unauthenticated health-check endpoint at "/".
 func healthCheckHandler(w http.ResponseWriter, r *http.Request) {
+	// Only handle exact root path
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
 	// Return 200 OK with a simple response.
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprint(w, "OK")
+}
+
+// handleTurnCredentials proxies requests to Cloudflare TURN API
+// GET /turn/credentials - returns fresh TURN credentials
+func handleTurnCredentials(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Get bearer token from environment
+	bearerToken := os.Getenv("CLOUDFLARE_BEARER_TOKEN")
+	if bearerToken == "" {
+		http.Error(w, "TURN credentials not configured", http.StatusServiceUnavailable)
+		log.Println("ERROR: CLOUDFLARE_BEARER_TOKEN environment variable not set")
+		return
+	}
+
+	// Build Cloudflare API request
+	apiURL := fmt.Sprintf(CloudflareTurnAPIURL, CloudflareTurnKeyID)
+	reqBody := strings.NewReader(`{"ttl": 86400}`)
+
+	req, err := http.NewRequest(http.MethodPost, apiURL, reqBody)
+	if err != nil {
+		http.Error(w, "Failed to create request", http.StatusInternalServerError)
+		log.Printf("ERROR: Failed to create Cloudflare request: %v", err)
+		return
+	}
+
+	req.Header.Set("Authorization", "Bearer "+bearerToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	// Make request to Cloudflare
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		http.Error(w, "Failed to fetch TURN credentials", http.StatusBadGateway)
+		log.Printf("ERROR: Cloudflare API request failed: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	// Read response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		http.Error(w, "Failed to read response", http.StatusInternalServerError)
+		log.Printf("ERROR: Failed to read Cloudflare response: %v", err)
+		return
+	}
+
+	// Check for error response
+	if resp.StatusCode != http.StatusOK {
+		http.Error(w, "Cloudflare API error: "+string(body), resp.StatusCode)
+		log.Printf("ERROR: Cloudflare API returned %d: %s", resp.StatusCode, string(body))
+		return
+	}
+
+	// Return the Cloudflare response as-is
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(body)
 }
 
 // handleCreateSession handles POST /session requests.
@@ -226,6 +308,9 @@ func main() {
 
 	// Register an unauthenticated health-check at the root "/".
 	http.HandleFunc("/", healthCheckHandler)
+
+	// Register TURN credentials endpoint (authenticated)
+	http.Handle("/turn/credentials", basicAuthMiddleware(http.HandlerFunc(handleTurnCredentials)))
 
 	// Wrap the HTTP handlers with Basic Auth middleware for session endpoints.
 	authenticatedHandler := basicAuthMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

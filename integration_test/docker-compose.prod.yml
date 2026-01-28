@@ -1,0 +1,109 @@
+# docker-compose.prod.yml
+# Uses REAL Cloudflare TURN and AWS Lightsail session server
+# Networks remain isolated - exchanges can ONLY communicate via Cloudflare TURN
+
+networks:
+  # Separate internet networks for each exchange (can't reach each other directly)
+  internet_a_net:
+    driver: bridge
+  internet_b_net:
+    driver: bridge
+  # Isolated host networks - cannot reach each other or internet
+  host_a_net:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.29.1.0/24
+  host_b_net:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.29.2.0/24
+
+services:
+  # Build service for exchange image
+  exchange:
+    build:
+      context: ..
+      dockerfile: integration_test/dockerfiles/Dockerfile.exchange
+    image: ice_client_exchange_prod
+    profiles:
+      - build
+
+  # Exchange A - on host_a_net (for Link) + internet_a_net (for TURN/session)
+  exchange_a:
+    image: ice_client_exchange_prod
+    container_name: exchange_a_prod
+    networks:
+      host_a_net:
+        ipv4_address: 172.29.1.10
+      internet_a_net:
+    environment:
+      - TURN_SERVER=${TURN_SERVER}
+      - TURN_USER=${TURN_USER}
+      - TURN_PASSWORD=${TURN_PASSWORD}
+      - SESSION_SERVER=${SESSION_SERVER}
+      - SESSION_USER=${SESSION_USER:-admin}
+      - SESSION_PASSWORD=${SESSION_PASSWORD:-secret}
+      - SESSION_ID=${SESSION_ID}
+    cap_add:
+      - NET_ADMIN
+    profiles:
+      - exchange
+
+  # Exchange B - on host_b_net (for Link) + internet_b_net (for TURN/session)
+  exchange_b:
+    image: ice_client_exchange_prod
+    container_name: exchange_b_prod
+    networks:
+      host_b_net:
+        ipv4_address: 172.29.2.10
+      internet_b_net:
+    environment:
+      - TURN_SERVER=${TURN_SERVER}
+      - TURN_USER=${TURN_USER}
+      - TURN_PASSWORD=${TURN_PASSWORD}
+      - SESSION_SERVER=${SESSION_SERVER}
+      - SESSION_USER=${SESSION_USER:-admin}
+      - SESSION_PASSWORD=${SESSION_PASSWORD:-secret}
+      - SESSION_ID=${SESSION_ID}
+    cap_add:
+      - NET_ADMIN
+    profiles:
+      - exchange
+
+  # Link test client container for host A (isolated - no internet)
+  link_client_a:
+    build:
+      context: ./link_test_client
+      dockerfile: Dockerfile
+    image: ice_client_link_test_prod
+    container_name: link_client_a_prod
+    networks:
+      host_a_net:
+        ipv4_address: 172.29.1.3
+    sysctls:
+      - net.ipv4.igmp_max_memberships=100
+    entrypoint: ["tail", "-f", "/dev/null"]
+    cap_add:
+      - NET_ADMIN
+    profiles:
+      - linktest
+
+  # Link test client container for host B (isolated - no internet)
+  link_client_b:
+    image: ice_client_link_test_prod
+    container_name: link_client_b_prod
+    networks:
+      host_b_net:
+        ipv4_address: 172.29.2.3
+    sysctls:
+      - net.ipv4.igmp_max_memberships=100
+    entrypoint: ["tail", "-f", "/dev/null"]
+    cap_add:
+      - NET_ADMIN
+    profiles:
+      - linktest
+      

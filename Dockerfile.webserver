@@ -1,5 +1,5 @@
 # Build stage: use Go 1.22 on Alpine Linux.
-FROM golang:1.22-alpine AS builder
+FROM golang:1.23-alpine AS builder
 
 # Set GOFLAGS to force use of vendor'd dependencies.
 ENV GOFLAGS=-mod=vendor
