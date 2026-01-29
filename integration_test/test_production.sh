@@ -1,14 +1,15 @@
 #!/bin/bash
 # test_production.sh - Test with REAL Cloudflare TURN and AWS session server
 #
-# REQUIRED: Set CLOUDFLARE_BEARER_TOKEN environment variable
-#   export CLOUDFLARE_BEARER_TOKEN="your-api-token"
-#   ./test_production.sh [--keep] [--no-rebuild] [--hard-clean]
+# REQUIRED: Set CLOUDFLARE_BEARER_TOKEN via .env file or environment variable
+#   echo "CLOUDFLARE_BEARER_TOKEN=your-api-token" > .env
+#   ./test_production.sh [--keep] [--no-rebuild] [--hard-clean] [--proxy-turn]
 #
 # Options:
 #   --keep        Leave containers running after test
 #   --no-rebuild  Skip Docker image rebuild
 #   --hard-clean  Remove all containers, networks, and images before starting
+#   --proxy-turn  Fetch TURN credentials via session server (instead of direct Cloudflare)
 #
 # This test validates:
 # - Real Cloudflare STUN/TURN connectivity
@@ -17,9 +18,15 @@
 
 set -e
 
+# Load .env file if present
+if [ -f .env ]; then
+    export $(grep -v '^#' .env | xargs)
+fi
+
 KEEP_RUNNING=false
 SKIP_REBUILD=false
 HARD_CLEAN=false
+PROXY_TURN=false
 TEST_DURATION=60  # Longer timeout for real network latency
 
 # Parse arguments
@@ -37,6 +44,10 @@ for arg in "$@"; do
             HARD_CLEAN=true
             shift
             ;;
+        --proxy-turn)
+            PROXY_TURN=true
+            shift
+            ;;
     esac
 done
 
@@ -44,7 +55,7 @@ echo "=============================================="
 echo "Production Infrastructure Test"
 echo "=============================================="
 echo "Using: Cloudflare TURN + AWS Lightsail Session Server"
-echo "Options: KEEP_RUNNING=$KEEP_RUNNING, SKIP_REBUILD=$SKIP_REBUILD, HARD_CLEAN=$HARD_CLEAN"
+echo "Options: KEEP_RUNNING=$KEEP_RUNNING, SKIP_REBUILD=$SKIP_REBUILD, HARD_CLEAN=$HARD_CLEAN, PROXY_TURN=$PROXY_TURN"
 echo ""
 
 # Hard clean if requested
@@ -87,45 +98,34 @@ if [ -z "$CLOUDFLARE_BEARER_TOKEN" ]; then
 fi
 echo "    CLOUDFLARE_BEARER_TOKEN is set."
 
-# Step 2: Generate Cloudflare TURN credentials
-echo "[2/9] Generating Cloudflare TURN credentials..."
-CLOUDFLARE_TURN_KEY_ID="0dcb3c9c553467f3ca69f05a6afd39ce"
-
-CREDS_RESPONSE=$(curl -s -X POST \
-    -H "Authorization: Bearer $CLOUDFLARE_BEARER_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{"ttl": 86400}' \
-    "https://rtc.live.cloudflare.com/v1/turn/keys/${CLOUDFLARE_TURN_KEY_ID}/credentials/generate")
-
-# Check for error
-if echo "$CREDS_RESPONSE" | grep -q "error"; then
-    echo "ERROR: Failed to generate TURN credentials:"
-    echo "$CREDS_RESPONSE"
-    exit 1
+# Step 2: Configure TURN credentials based on mode
+echo "[2/9] Configuring TURN credentials..."
+if [ "$PROXY_TURN" = true ]; then
+    echo "    Mode: PROXY (exchange fetches credentials from session server)"
+    # Don't set TURN_USER/TURN_PASSWORD - exchange will fetch from session server
+    # Don't pass CLOUDFLARE_BEARER_TOKEN to container
+    unset TURN_USER
+    unset TURN_PASSWORD
+    export TURN_CREDENTIAL_MODE="proxy"
+else
+    echo "    Mode: DIRECT (exchange fetches credentials from Cloudflare)"
+    # Pass bearer token to container - exchange will call Cloudflare directly
+    export TURN_CREDENTIAL_MODE="direct"
+    # Unset TURN_USER/TURN_PASSWORD so exchange doesn't use env credentials
+    unset TURN_USER
+    unset TURN_PASSWORD
 fi
-
-# Extract username and credential
-export TURN_USER=$(echo "$CREDS_RESPONSE" | grep -o '"username":"[^"]*"' | cut -d'"' -f4)
-export TURN_PASSWORD=$(echo "$CREDS_RESPONSE" | grep -o '"credential":"[^"]*"' | cut -d'"' -f4)
-
-if [ -z "$TURN_USER" ] || [ -z "$TURN_PASSWORD" ]; then
-    echo "ERROR: Failed to parse TURN credentials from response:"
-    echo "$CREDS_RESPONSE"
-    exit 1
-fi
-
-echo "    TURN credentials generated (valid for 24 hours)"
-echo "    Username: ${TURN_USER:0:20}..."
 
 # Step 3: Set up environment variables
 echo "[3/9] Configuring environment..."
 export TURN_SERVER="turn.cloudflare.com:3478"
 export SESSION_SERVER="https://link-session-service.nrr4m2c4w38qw.us-west-2.cs.amazonlightsail.com"
-export SESSION_USER="admin"
-export SESSION_PASSWORD="supersecret"
+export SESSION_USER="${SESSION_USER:-admin}"
+export SESSION_PASSWORD="${SESSION_PASSWORD:-supersecret}"
 export SESSION_ID=$(uuidgen | tr '[:upper:]' '[:lower:]')
 
 echo "    TURN_SERVER: $TURN_SERVER"
+echo "    TURN_CREDENTIAL_MODE: $TURN_CREDENTIAL_MODE"
 echo "    SESSION_SERVER: $SESSION_SERVER"
 echo "    SESSION_ID: $SESSION_ID"
 
@@ -228,12 +228,13 @@ while true; do
         echo "SUCCESS! Peers discovered via Cloudflare TURN!"
         echo "=============================================="
         echo "  Session ID: $SESSION_ID"
+        echo "  TURN Credential Mode: $TURN_CREDENTIAL_MODE"
         echo "  Client A sees $PEERS_A peer(s)"
         echo "  Client B sees $PEERS_B peer(s)"
         
         echo ""
         echo "=== Exchange A TURN info ==="
-        docker compose -f docker-compose.prod.yml logs exchange_a 2>&1 | grep -E "relayed-address|Session" | head -5
+        docker compose -f docker-compose.prod.yml logs exchange_a 2>&1 | grep -E "relayed-address|Session|TURN|Cloudflare|session server" | head -10
         
         echo ""
         echo "=== Client A last 5 entries ==="

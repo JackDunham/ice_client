@@ -25,7 +25,6 @@ import (
 
 const (
 	SECONDS_PER_DAY               = 86400
-	API_BEARER_TOKEN              = "2a25a05b3daef821a3e93596f6942ac56eace5d9886ca8a2e36b4264fe83b056"
 	TURN_TOKEN_ID                 = "0dcb3c9c553467f3ca69f05a6afd39ce"
 	CLOUDFLARE_CREDENTIALS_URL    = "https://rtc.live.cloudflare.com/v1/turn/keys/%s/credentials/generate"
 	CONTENT_TYPE_APPLICATION_JSON = "application/json"
@@ -34,10 +33,11 @@ const (
 
 // Environment variable names for TURN configuration
 const (
-	ENV_TURN_SERVER   = "TURN_SERVER"   // e.g., "172.28.0.10:3478"
-	ENV_TURN_USER     = "TURN_USER"     // e.g., "testuser"
-	ENV_TURN_PASSWORD = "TURN_PASSWORD" // e.g., "testpassword"
-	ENV_TURN_REALM    = "TURN_REALM"    // e.g., "test.local" (optional)
+	ENV_TURN_SERVER             = "TURN_SERVER"             // e.g., "172.28.0.10:3478"
+	ENV_TURN_USER               = "TURN_USER"               // e.g., "testuser"
+	ENV_TURN_PASSWORD           = "TURN_PASSWORD"           // e.g., "testpassword"
+	ENV_TURN_REALM              = "TURN_REALM"              // e.g., "test.local" (optional)
+	ENV_CLOUDFLARE_BEARER_TOKEN = "CLOUDFLARE_BEARER_TOKEN" // Cloudflare API token (optional)
 )
 
 type TurnRelay struct {
@@ -127,7 +127,7 @@ func getTurnCredentialsFromEnv() *TurnCredentials {
 }
 
 // getTurnCredentialsFromCloudflare fetches credentials from Cloudflare TURN API
-func getTurnCredentialsFromCloudflare() (*TurnCredentials, error) {
+func getTurnCredentialsFromCloudflare(bearerToken string) (*TurnCredentials, error) {
 	ctx, cancelFunc := context.WithTimeout(context.Background(), time.Second*time.Duration(5))
 	defer cancelFunc()
 
@@ -142,7 +142,7 @@ func getTurnCredentialsFromCloudflare() (*TurnCredentials, error) {
 		return nil, fmt.Errorf("failed creating credentials request: %w", err)
 	}
 	req.Header.Set("Content-Type", CONTENT_TYPE_APPLICATION_JSON)
-	req.Header.Set("Authorization", "Bearer "+API_BEARER_TOKEN)
+	req.Header.Set("Authorization", "Bearer "+bearerToken)
 	httpClient := &http.Client{}
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -167,16 +167,82 @@ func getTurnCredentialsFromCloudflare() (*TurnCredentials, error) {
 	return &creds, nil
 }
 
-// getTurnCredentials gets TURN credentials from environment variables or Cloudflare
+// getTurnCredentialsFromSessionServer fetches TURN credentials from the session server
+func getTurnCredentialsFromSessionServer() (*TurnCredentials, error) {
+	ctx, cancelFunc := context.WithTimeout(context.Background(), time.Second*time.Duration(10))
+	defer cancelFunc()
+
+	// Get session server config (reuse existing function from session package)
+	sessionServer := os.Getenv(session.ENV_SESSION_SERVER)
+	if sessionServer == "" {
+		sessionServer = session.DEFAULT_SESSION_SERVER_HOST
+	}
+
+	sessionUser := os.Getenv(session.ENV_SESSION_USER)
+	if sessionUser == "" {
+		sessionUser = session.DEFAULT_SESSION_USER
+	}
+
+	sessionPass := os.Getenv(session.ENV_SESSION_PASSWORD)
+	if sessionPass == "" {
+		sessionPass = session.DEFAULT_SESSION_PASS
+	}
+
+	credentialsURL := fmt.Sprintf("%s/turn/credentials", sessionServer)
+	fmt.Printf("Fetching TURN credentials from session server: %s\n", credentialsURL)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", credentialsURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed creating session server request: %w", err)
+	}
+	req.SetBasicAuth(sessionUser, sessionPass)
+
+	httpClient := &http.Client{}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed requesting credentials from session server: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("error reading session server response: %w", err)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("session server returned error (status=%d): %s", resp.StatusCode, string(body))
+	}
+
+	if len(body) == 0 {
+		return nil, fmt.Errorf("empty response from session server")
+	}
+
+	var creds TurnCredentials
+	if err := json.Unmarshal(body, &creds); err != nil {
+		return nil, fmt.Errorf("failed to parse credentials from session server: %w", err)
+	}
+	creds.Host, creds.Port, creds.User, creds.Cred, creds.Realm = getHostPortUserCredRealm(&creds)
+	fmt.Printf("Using TURN credentials from session server (username: %s)\n", creds.IceServers.Username)
+	return &creds, nil
+}
+
+// getTurnCredentials gets TURN credentials from environment variables, Cloudflare, or session server
 func getTurnCredentials() (*TurnCredentials, error) {
-	// First, try environment variables
+	// First, try environment variables (direct TURN server config)
 	if creds := getTurnCredentialsFromEnv(); creds != nil {
 		return creds, nil
 	}
 
-	// Fall back to Cloudflare
-	fmt.Println("No TURN environment variables set, using Cloudflare TURN...")
-	return getTurnCredentialsFromCloudflare()
+	// Check if Cloudflare bearer token is available
+	bearerToken := os.Getenv(ENV_CLOUDFLARE_BEARER_TOKEN)
+	if bearerToken != "" {
+		fmt.Println("Using Cloudflare TURN API directly...")
+		return getTurnCredentialsFromCloudflare(bearerToken)
+	}
+
+	// Fall back to session server
+	fmt.Println("No TURN credentials in environment, fetching from session server...")
+	return getTurnCredentialsFromSessionServer()
 }
 
 func (turnRelay *TurnRelay) Shutdown() {
