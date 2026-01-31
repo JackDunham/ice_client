@@ -529,13 +529,31 @@ func main() {
 		cancel()
 	}()
 
-	// Get session-ID from "session" flag or SESSION_ID env var
-	sessionID := flag.String("session", "", "session-ID to join, or blank, to create a new session")
+	// CLI flags
+	sessionID := flag.String("session", "", "Session ID to join, or blank to create a new session")
+	sessionServer := flag.String("session-server", "", "Session server URL (overrides SESSION_SERVER env)")
+	sessionUser := flag.String("session-user", "", "Session server username (overrides SESSION_USER env)")
+	sessionPassword := flag.String("session-password", "", "Session server password (overrides SESSION_PASSWORD env)")
+
 	// Parse the flags.
 	flag.Parse()
 
-	// Environment variable overrides flag
-	if envSessionID := os.Getenv("SESSION_ID"); envSessionID != "" {
+	// Apply CLI flags to environment (they take precedence over env vars)
+	if *sessionServer != "" {
+		os.Setenv(session.ENV_SESSION_SERVER, *sessionServer)
+		fmt.Printf("Using session server from flag: %s\n", *sessionServer)
+	}
+	if *sessionUser != "" {
+		os.Setenv(session.ENV_SESSION_USER, *sessionUser)
+		fmt.Printf("Using session user from flag: %s\n", *sessionUser)
+	}
+	if *sessionPassword != "" {
+		os.Setenv(session.ENV_SESSION_PASSWORD, *sessionPassword)
+		fmt.Println("Using session password from flag")
+	}
+
+	// Environment variable can also set session ID
+	if envSessionID := os.Getenv("SESSION_ID"); envSessionID != "" && *sessionID == "" {
 		*sessionID = envSessionID
 		fmt.Printf("Using session ID from environment: %s\n", envSessionID)
 	}

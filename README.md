@@ -6,6 +6,45 @@ Extends Ableton Link protocol to work across wide area networks, enabling geogra
 
 Ableton Link is designed for LAN-only communication using UDP multicast on `224.76.78.75:20808`. This project bridges that limitation by relaying Link traffic through TURN servers, allowing peers on different networks to discover each other and sync.
 
+## Quick Start
+
+### 1. Build the Exchange
+
+```bash
+# Build for your current architecture
+./build_exchange.sh
+
+# Or build for specific platforms
+./build_exchange.sh arm64    # Apple Silicon
+./build_exchange.sh amd64    # Intel Mac
+./build_exchange.sh all      # All platforms
+```
+
+### 2. Run the Exchange
+
+**Person A** (creates session):
+```bash
+./exchange-darwin-arm64 \
+  --session-server https://link-session-service.nrr4m2c4w38qw.us-west-2.cs.amazonlightsail.com \
+  --session-user admin \
+  --session-password <password>
+```
+
+This outputs a session ID and writes it to `current_session_id`.
+
+**Person B** (joins session):
+```bash
+./exchange-darwin-arm64 \
+  --session-server https://link-session-service.nrr4m2c4w38qw.us-west-2.cs.amazonlightsail.com \
+  --session-user admin \
+  --session-password <password> \
+  --session <session-id-from-person-a>
+```
+
+### 3. Start Ableton Live
+
+Launch Ableton Live (or any Link-enabled app) on both computers. They should discover each other through the exchange bridge.
+
 ## Architecture
 
 ```
@@ -72,6 +111,39 @@ The exchange bridge handles two types of Link packets:
 3. Session Server returns list of all relay addresses in the session
 4. Exchanges send packets to each other's relay addresses via TURN
 
+## Exchange CLI Reference
+
+```
+Usage: exchange [options]
+
+Options:
+  -session string
+        Session ID to join, or blank to create a new session
+  -session-server string
+        Session server URL (overrides SESSION_SERVER env)
+  -session-user string
+        Session server username (overrides SESSION_USER env)
+  -session-password string
+        Session server password (overrides SESSION_PASSWORD env)
+
+Environment Variables (used if flags not provided):
+  SESSION_SERVER      Session server URL
+  SESSION_USER        Session server username  
+  SESSION_PASSWORD    Session server password
+  SESSION_ID          Session ID to join
+  CLOUDFLARE_BEARER_TOKEN   Cloudflare API token (for direct TURN credential fetch)
+  TURN_SERVER         Direct TURN server address (bypasses credential fetch)
+  TURN_USER           Direct TURN username
+  TURN_PASSWORD       Direct TURN password
+```
+
+### Credential Resolution Order
+
+The exchange fetches TURN credentials in this order:
+1. **Environment variables**: If `TURN_SERVER`, `TURN_USER`, `TURN_PASSWORD` are all set
+2. **Cloudflare direct**: If `CLOUDFLARE_BEARER_TOKEN` is set, calls Cloudflare API
+3. **Session server proxy**: Falls back to `SESSION_SERVER/turn/credentials`
+
 ## Components
 
 ### Exchange (`cmd/exchange/`)
@@ -121,32 +193,20 @@ Go wrapper around Ableton Link C++ library for testing:
    curl -u admin:password https://link-session-service.nrr4m2c4w38qw.us-west-2.cs.amazonlightsail.com/turn/credentials
    ```
 
-### Exchange (Local)
-
-```bash
-# Set environment variables
-export TURN_SERVER="turn.cloudflare.com:3478"
-export TURN_USER="<from /turn/credentials>"
-export TURN_PASSWORD="<from /turn/credentials>"
-export SESSION_SERVER="https://link-session-service.nrr4m2c4w38qw.us-west-2.cs.amazonlightsail.com"
-export SESSION_ID="<shared-uuid>"
-
-# Run exchange
-go run cmd/exchange/exchange.go
-```
-
 ## Integration Tests
 
 Tests are in `integration_test/`. They use Docker to create isolated networks simulating WAN conditions.
 
 ### Prerequisites
 - Docker and Docker Compose v2
-- Make (optional)
 
 ### Running Tests
 
 ```bash
 cd integration_test
+
+# Create .env file with Cloudflare token
+echo "CLOUDFLARE_BEARER_TOKEN=your-token" > .env
 
 # 1. Basic connectivity test (builds images, starts infrastructure)
 ./test_link_wan.sh --keep
@@ -158,16 +218,20 @@ cd integration_test
 ./test_latency.sh
 
 # 4. Production infrastructure test (real Cloudflare + AWS)
-export CLOUDFLARE_BEARER_TOKEN="your-token"
 ./test_production.sh --keep
+
+# 5. Production test with TURN credential proxy
+./test_production.sh --proxy-turn --keep
 
 # Clean up
 docker compose down
 ```
 
 ### Test Options
-- `--keep` - Leave containers running after test (for debugging or subsequent tests)
-- `--no-rebuild` - Skip Docker image rebuild (faster if images exist)
+- `--keep` - Leave containers running after test
+- `--no-rebuild` - Skip Docker image rebuild
+- `--hard-clean` - Remove all containers, networks, images before starting
+- `--proxy-turn` - Fetch TURN credentials via session server instead of direct Cloudflare
 
 ### Test Network Topology
 
@@ -197,14 +261,15 @@ docker compose down
 ### Building
 
 ```bash
-# Build exchange
-go build -o exchange cmd/exchange/exchange.go
+# Build exchange for current platform
+./build_exchange.sh
 
-# Build session server (for local testing)
-go build -o webserver cmd/http/main.go
+# Build for all platforms
+./build_exchange.sh all
 
-# Build with Docker (for deployment)
-docker buildx build -f Dockerfile.webserver --platform linux/amd64 -t session-server:latest --load .
+# Build session server Docker image
+cd cmd/http
+./build.sh
 ```
 
 ### Vendoring
@@ -225,6 +290,7 @@ go mod vendor
 │       ├── deploy_session_server.sh
 │       └── .env           # (create from .env.example)
 ├── integration_test/
+│   ├── .env               # CLOUDFLARE_BEARER_TOKEN (create this)
 │   ├── docker-compose.yml
 │   ├── docker-compose.prod.yml
 │   ├── test_link_wan.sh
@@ -237,6 +303,7 @@ go mod vendor
 │   └── relay.go
 ├── session/               # Session server client
 │   └── session.go
+├── build_exchange.sh      # Build script for exchange binary
 └── Dockerfile.webserver   # Session server container
 ```
 
